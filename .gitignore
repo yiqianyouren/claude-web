@@ -12,6 +12,11 @@ env/
 .mypy_cache/
 .ruff_cache/
 
+# Build artifacts
+dist/
+build/
+*.whl
+
 # Runtime data (user-specific, contains PII)
 history/
 uploads/

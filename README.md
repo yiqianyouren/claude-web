@@ -96,9 +96,26 @@
 
 ### 安装
 
-#### 方式一：让 Claude Code 自己装（推荐 🎉）
+#### 方式一：pip 安装（推荐）
 
-既然 Claude Code 已经装好了，直接让它帮你装本项目：
+```bash
+pip install claude-web-ui
+```
+
+安装完成后一条命令启动：
+
+```bash
+claude-web
+# 浏览器打开 http://127.0.0.1:8765
+```
+
+更新到最新版：
+
+```bash
+pip install --upgrade claude-web-ui
+```
+
+#### 方式二：让 Claude Code 自己装 🎉
 
 ```bash
 claude
@@ -107,41 +124,33 @@ claude
 进入交互模式后，把下面这段话丢给它：
 
 ```
-帮我安装 https://github.com/heng1234/claude-web 到 ~/claude-web 目录：
-1. git clone 到 ~/claude-web
-2. 在该目录下创建 Python 虚拟环境 .venv 并激活
-3. pip install -r requirements.txt
-4. 最后 python server.py 启动服务
-启动成功后告诉我访问地址
+帮我安装 claude-web-ui：pip install claude-web-ui，然后运行 claude-web 启动服务
 ```
 
-Claude Code 会依次执行 `git clone`、`python -m venv`、`pip install`、`python server.py`，完成后浏览器打开 `http://127.0.0.1:8765` 即可。
+> 💡 用 Claude Code 给 Claude Code 装一个 Web UI。
 
-> 💡 这是一个很有爱的闭环：用 Claude Code 给 Claude Code 装一个 Web UI。
-
-#### 方式二：手动安装
+#### 方式三：从源码安装
 
 ```bash
 git clone https://github.com/heng1234/claude-web.git
 cd claude-web
-
-python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -e .
+claude-web
 ```
 
 ### 运行
 
 ```bash
-python server.py
-# 浏览器打开 http://127.0.0.1:8765
+claude-web                    # 默认 127.0.0.1:8765
+claude-web --port 9000        # 自定义端口
+claude-web --open             # 启动后自动打开浏览器
+claude-web --host 0.0.0.0     # 局域网共享
 ```
 
 ### 局域网共享（可选）
 
-修改 `server.py` 末尾：
-```python
-uvicorn.run(app, host="0.0.0.0", port=port)
+```bash
+claude-web --host 0.0.0.0
 ```
 ⚠️ 别暴露到公网，本工具**没有鉴权**。
 

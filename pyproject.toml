@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-web-ui"
+dynamic = ["version"]
+description = "Web UI for Claude Code CLI — token streaming, tool visualization, checkpoint rollback, multi-session management"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [
+    { name = "heng1234" },
+]
+keywords = ["claude", "claude-code", "anthropic", "llm", "web-ui", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: User Interfaces",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "pypdf>=4.0",
+    "python-docx>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/heng1234/claude-web"
+Repository = "https://github.com/heng1234/claude-web"
+Issues = "https://github.com/heng1234/claude-web/issues"
+
+[project.scripts]
+claude-web = "claude_web.server:main"
+
+[tool.hatch.version]
+path = "claude_web/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["claude_web"]
