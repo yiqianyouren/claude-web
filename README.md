@@ -41,7 +41,7 @@ pip install claude-web-ui && claude-web
 
 ### 📝 输入
 - 文本 + 图片（**文件选择 / 粘贴 / 拖拽**）
-- **文档上传**：PDF / DOCX / CSV / TSV / TXT / MD / JSON / LOG 自动提取文本作为上下文
+- **文档上传**：PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG 自动提取文本作为上下文
 - **URL 自动检测**：输入框里粘贴链接，发送时自动抓取网页正文
 - **联网搜索开关**：一键激活 WebSearch / WebFetch
 - `@` 引用工作目录下的文件（↑↓ 选择）
@@ -77,6 +77,14 @@ pip install claude-web-ui && claude-web
 - 进度条 + 逐项状态（⬜ 待办 / ⏳ 进行中 / ✅ 完成）
 - 多次 TodoWrite 调用自动队列回放，进度动画
 - 面板可折叠 / 关闭
+
+### 🔌 MCP Server 管理面板
+- 可视化查看所有 MCP server（支持 user / local / project 三层 scope）
+- 一键启用 / 禁用 / 删除
+- 添加新 server（表单引导，支持 stdio 类型）
+- 环境变量 / headers 自动脱敏显示（token/key/secret 只显示前 4 位）
+- 支持 `.mcp.json` 项目级配置
+- 修改后新建会话即生效
 
 ### 📊 其它
 - 模型切换（Opus / Sonnet / Haiku）
@@ -202,7 +210,7 @@ python3 scripts/check_sensitive_info.py --paths server.py static/index.html READ
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Python 3.9+ · FastAPI · uvicorn · SQLite · pypdf · python-docx |
+| 后端 | Python 3.9+ · FastAPI · uvicorn · SQLite · pypdf · python-docx · openpyxl · xlrd |
 | 前端 | 原生 JS · TailwindCSS · marked.js · highlight.js · Mermaid · KaTeX · Chart.js |
 | 协议 | Server-Sent Events（流式输出）· stream-json stdin（多模态图片输入） |
 | 依赖 | `claude` CLI（透过 subprocess 调用） |
@@ -251,7 +259,7 @@ claude-web/
 | `/api/chat` | POST | 主对话，SSE 流式返回 |
 | `/api/chat/stop/{session_id}` | POST | 停止正在运行的会话 |
 | `/api/upload` | POST | 上传图片 |
-| `/api/upload-doc` | POST | 上传文档（PDF / DOCX / CSV / TSV / TXT / MD / JSON / LOG），自动提取文本 |
+| `/api/upload-doc` | POST | 上传文档（PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG），自动提取文本 |
 | `/api/exec-code` | POST | 运行代码块（Python/JS/Bash，15s 超时） |
 | `/api/fetch-url` | POST | 抓取 URL 正文（带 SSRF 防护） |
 | `/api/sessions` | GET | 列出所有会话（含搜索 / 归档 / 标签） |
@@ -288,13 +296,15 @@ claude-web/
 
 #### 已实现 ✅
 - [x] 多轮对话、停止生成、图片输入、工具调用可视化、思考过程展示
-- [x] 文档上传（PDF / DOCX / CSV / TSV / TXT / MD / JSON / LOG）和 URL 自动抓取上下文
+- [x] 文档上传（PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG）和 URL 自动抓取上下文
 - [x] 联网搜索开关、`@` 文件引用、Token 估算、草稿自动保存、提示词模板库
 - [x] Mermaid / LaTeX 渲染、图片 Lightbox、代码块复制与本地运行
 - [x] 会话置顶 / 归档 / 标签 / 搜索 / 导出 / 双击重命名 / AI 智能命名
 - [x] 历史消息就地编辑继续、重新生成分叉、Git checkpoint 回滚
 - [x] TodoWrite 实时看板、统计面板、Git 状态栏、暗黑模式、移动端侧栏
 - [x] 权限策略（CLI 默认 / 允许编辑 / 计划 / 只读 / 自定义工具）和权限失败后的本会话临时放行重试
+- [x] MCP Server 管理面板（多 scope 查看 / 启用 / 禁用 / 添加 / 删除 / 脱敏展示）
+- [x] PyPI 发包（`pip install claude-web-ui`）
 
 #### 部分实现 / 有限制 ⚠️
 - [ ] 运行时交互式权限审批仍未实现；目前是预设策略 + 权限失败后重试
@@ -304,7 +314,6 @@ claude-web/
 
 ### 待办
 - [ ] Artifacts 侧边预览（HTML/React 实时渲染）
-- [ ] MCP server 管理面板
 - [ ] Slash 命令透传（`/compact` `/clear` `/init`）
 - [ ] 导入 `~/.claude/projects/` 原生会话
 - [ ] 基于 MCP 的真·交互审批
@@ -327,4 +336,4 @@ Apache License 2.0 — 见 [LICENSE](LICENSE)
 ## 🙏 致谢
 
 - [Claude Code](https://docs.claude.com/claude-code) — Anthropic
-- [FastAPI](https://fastapi.tiangolo.com/) · [TailwindCSS](https://tailwindcss.com/) · [marked](https://github.com/markedjs/marked) · [pypdf](https://github.com/py-pdf/pypdf) · [python-docx](https://github.com/python-openxml/python-docx)
+- [FastAPI](https://fastapi.tiangolo.com/) · [TailwindCSS](https://tailwindcss.com/) · [marked](https://github.com/markedjs/marked) · [pypdf](https://github.com/py-pdf/pypdf) · [python-docx](https://github.com/python-openxml/python-docx) · [openpyxl](https://openpyxl.readthedocs.io/) · [xlrd](https://xlrd.readthedocs.io/)

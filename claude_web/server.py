@@ -695,7 +695,18 @@ async def upload(file: UploadFile = File(...)):
     }
 
 
-DOC_EXTS = {".pdf", ".docx", ".csv", ".tsv", ".txt", ".md", ".json", ".log"}
+DOC_EXTS = {".pdf", ".docx", ".csv", ".tsv", ".txt", ".md", ".json", ".log", ".xlsx", ".xls"}
+DOC_MIME_EXTS = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.ms-excel": ".xls",
+    "text/csv": ".csv",
+    "text/tab-separated-values": ".tsv",
+    "text/markdown": ".md",
+    "application/json": ".json",
+    "text/plain": ".txt",
+}
 MAX_DOC_MB = 20
 MAX_DOC_CHARS = 50000
 
@@ -723,11 +734,58 @@ def _extract_docx_text(path: Path) -> str:
     return "\n".join(parts)
 
 
+def _extract_xlsx_text(path: Path) -> str:
+    import openpyxl
+    wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        parts: List[str] = []
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            parts.append(f"[Sheet: {sheet_name}]")
+            for row in ws.iter_rows(values_only=True):
+                cells = [str(c) if c is not None else "" for c in row]
+                if any(cells):
+                    parts.append(" | ".join(cells))
+    finally:
+        wb.close()
+    return "\n".join(parts)
+
+
+def _extract_xls_text(path: Path) -> str:
+    import xlrd
+    wb = xlrd.open_workbook(str(path), on_demand=True)
+    try:
+        parts: List[str] = []
+        for sheet in wb.sheets():
+            parts.append(f"[Sheet: {sheet.name}]")
+            for row_idx in range(sheet.nrows):
+                values = []
+                for cell in sheet.row(row_idx):
+                    value = cell.value
+                    if isinstance(value, float) and value.is_integer():
+                        value = int(value)
+                    values.append(str(value) if value != "" else "")
+                if any(values):
+                    parts.append(" | ".join(values))
+    finally:
+        wb.release_resources()
+    return "\n".join(parts)
+
+
+def _doc_ext_from_upload(file: UploadFile) -> tuple[str, str]:
+    filename = file.filename or "clipboard-file"
+    ext = Path(filename).suffix.lower()
+    if not ext:
+        content_type = (file.content_type or "").split(";", 1)[0].strip().lower()
+        ext = DOC_MIME_EXTS.get(content_type, "")
+    if not ext:
+        raise HTTPException(status_code=400, detail="filename missing")
+    return ext, filename
+
+
 @app.post("/api/upload-doc")
 async def upload_doc(file: UploadFile = File(...)):
-    if file.filename is None:
-        raise HTTPException(status_code=400, detail="filename missing")
-    ext = Path(file.filename).suffix.lower()
+    ext, filename = _doc_ext_from_upload(file)
     if ext not in DOC_EXTS:
         raise HTTPException(status_code=400, detail=f"unsupported type {ext}")
 
@@ -744,6 +802,10 @@ async def upload_doc(file: UploadFile = File(...)):
             text = _extract_pdf_text(path)
         elif ext == ".docx":
             text = _extract_docx_text(path)
+        elif ext == ".xlsx":
+            text = _extract_xlsx_text(path)
+        elif ext == ".xls":
+            text = _extract_xls_text(path)
         else:
             text = data.decode("utf-8", errors="replace")
     except Exception as e:
@@ -756,7 +818,7 @@ async def upload_doc(file: UploadFile = File(...)):
 
     return {
         "path": str(path.absolute()),
-        "name": file.filename,
+        "name": filename,
         "size": len(data),
         "ext": ext,
         "content": text,
@@ -1050,6 +1112,371 @@ async def suggest_followups(session_id: str = ""):
     lines = [l.strip() for l in stdout.decode("utf-8", errors="replace").splitlines() if l.strip()]
     suggestions = [l.lstrip("0123456789.-、）) ") for l in lines[:3]]
     return {"suggestions": suggestions}
+
+
+# ===== MCP Management =====
+
+_CLAUDE_CONFIG_PATH = Path.home() / ".claude.json"
+_PROJECT_MCP_FILENAME = ".mcp.json"
+_DISABLED_MCP_SERVERS_KEY = "claudeWebDisabledMcpServers"
+_MCP_SCOPES = {"local", "user", "project"}
+
+
+def _read_json_object(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"invalid JSON in {path}: {e.msg}")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"cannot read {path}: {e}")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail=f"invalid JSON object in {path}")
+    return data
+
+
+def _write_json_object(path: Path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"cannot write {path}: {e}")
+
+
+def _normalize_mcp_scope(scope: Optional[str]) -> str:
+    normalized = (scope or "local").strip().lower()
+    if normalized not in _MCP_SCOPES:
+        raise HTTPException(status_code=400, detail="scope must be local, user, or project")
+    return normalized
+
+
+def _resolve_mcp_cwd(cwd: Optional[str]) -> Path:
+    raw = (cwd or "").strip() or "~"
+    target = Path(os.path.expanduser(raw)).resolve()
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail=f"invalid cwd: {raw}")
+    return target
+
+
+def _dict_value(parent: dict, key: str) -> dict:
+    value = parent.get(key)
+    if not isinstance(value, dict):
+        value = {}
+        parent[key] = value
+    return value
+
+
+def _source_label(scope: str) -> str:
+    return {
+        "local": "Local",
+        "user": "User",
+        "project": "Project",
+    }.get(scope, scope)
+
+
+def _mcp_sources(cwd: Optional[str], create: bool = False) -> list[dict]:
+    project_dir = _resolve_mcp_cwd(cwd)
+    project_key = str(project_dir)
+    claude_data = _read_json_object(_CLAUDE_CONFIG_PATH)
+    project_mcp_path = project_dir / _PROJECT_MCP_FILENAME
+    project_mcp_data = _read_json_object(project_mcp_path)
+
+    projects = _dict_value(claude_data, "projects") if create else claude_data.get("projects", {})
+    if not isinstance(projects, dict):
+        projects = {}
+    local_project = projects.get(project_key)
+    if create:
+        local_project = projects.setdefault(project_key, {})
+    if not isinstance(local_project, dict):
+        local_project = {}
+
+    project_choice = local_project if isinstance(local_project, dict) else {}
+    disabled_project_servers = project_choice.get("disabledMcpjsonServers", [])
+    if not isinstance(disabled_project_servers, list):
+        disabled_project_servers = []
+
+    return [
+        {
+            "scope": "user",
+            "path": _CLAUDE_CONFIG_PATH,
+            "data": claude_data,
+            "servers": claude_data.get("mcpServers", {}) if isinstance(claude_data.get("mcpServers", {}), dict) else {},
+            "disabled_servers": claude_data.get(_DISABLED_MCP_SERVERS_KEY, {}) if isinstance(claude_data.get(_DISABLED_MCP_SERVERS_KEY, {}), dict) else {},
+        },
+        {
+            "scope": "local",
+            "path": _CLAUDE_CONFIG_PATH,
+            "data": claude_data,
+            "servers": local_project.get("mcpServers", {}) if isinstance(local_project.get("mcpServers", {}), dict) else {},
+            "disabled_servers": local_project.get(_DISABLED_MCP_SERVERS_KEY, {}) if isinstance(local_project.get(_DISABLED_MCP_SERVERS_KEY, {}), dict) else {},
+            "project_key": project_key,
+            "project": local_project,
+        },
+        {
+            "scope": "project",
+            "path": project_mcp_path,
+            "data": project_mcp_data,
+            "servers": project_mcp_data.get("mcpServers", {}) if isinstance(project_mcp_data.get("mcpServers", {}), dict) else {},
+            "disabled_names": set(str(v) for v in disabled_project_servers),
+            "claude_data": claude_data,
+            "project_key": project_key,
+            "project": local_project,
+        },
+    ]
+
+
+def _mcp_target(scope: str, cwd: Optional[str]) -> dict:
+    normalized = _normalize_mcp_scope(scope)
+    sources = _mcp_sources(cwd, create=True)
+    for source in sources:
+        if source["scope"] == normalized:
+            if normalized == "user":
+                source["servers"] = _dict_value(source["data"], "mcpServers")
+                source["disabled_servers"] = _dict_value(source["data"], _DISABLED_MCP_SERVERS_KEY)
+            elif normalized == "local":
+                source["servers"] = _dict_value(source["project"], "mcpServers")
+                source["disabled_servers"] = _dict_value(source["project"], _DISABLED_MCP_SERVERS_KEY)
+            else:
+                source["servers"] = _dict_value(source["data"], "mcpServers")
+                disabled = source["project"].get("disabledMcpjsonServers")
+                if not isinstance(disabled, list):
+                    disabled = []
+                    source["project"]["disabledMcpjsonServers"] = disabled
+                source["disabled_names"] = set(str(v) for v in disabled)
+            return source
+    raise HTTPException(status_code=400, detail="invalid scope")
+
+
+def _save_mcp_source(source: dict, save_claude_choices: bool = False) -> None:
+    _write_json_object(source["path"], source["data"])
+    if source["scope"] == "project" and save_claude_choices:
+        _write_json_object(_CLAUDE_CONFIG_PATH, source["claude_data"])
+
+
+def _find_mcp_source(name: str, scope: Optional[str], cwd: Optional[str]) -> dict:
+    if scope:
+        source = _mcp_target(scope, cwd)
+        if _mcp_config_in_source(source, name) is None:
+            raise HTTPException(status_code=404, detail=f"server '{name}' not found")
+        return source
+
+    matches = []
+    for source in _mcp_sources(cwd, create=True):
+        if _mcp_config_in_source(source, name) is not None:
+            matches.append(source)
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"server '{name}' not found")
+    if len(matches) > 1:
+        scopes = ", ".join(_source_label(m["scope"]) for m in matches)
+        raise HTTPException(status_code=409, detail=f"server '{name}' exists in multiple scopes: {scopes}")
+    return matches[0]
+
+
+def _mcp_config_in_source(source: dict, name: str) -> Optional[dict]:
+    servers = source.get("servers") or {}
+    if name in servers and isinstance(servers[name], dict):
+        return servers[name]
+    disabled = source.get("disabled_servers") or {}
+    if name in disabled and isinstance(disabled[name], dict):
+        return disabled[name]
+    return None
+
+
+def _is_mcp_disabled(source: dict, name: str) -> bool:
+    if source["scope"] == "project":
+        return name in (source.get("disabled_names") or set())
+    return name in (source.get("disabled_servers") or {})
+
+
+def _set_mcp_disabled(source: dict, name: str, disabled: bool) -> bool:
+    if source["scope"] == "project":
+        project = source["project"]
+        disabled_list = project.get("disabledMcpjsonServers")
+        if not isinstance(disabled_list, list):
+            disabled_list = []
+            project["disabledMcpjsonServers"] = disabled_list
+        if disabled and name not in disabled_list:
+            disabled_list.append(name)
+        elif not disabled:
+            project["disabledMcpjsonServers"] = [n for n in disabled_list if n != name]
+        return True
+
+    servers = source["servers"]
+    disabled_servers = source["disabled_servers"]
+    if disabled:
+        cfg = servers.pop(name, disabled_servers.get(name))
+        if cfg is not None:
+            cfg.pop("disabled", None)
+            disabled_servers[name] = cfg
+    else:
+        cfg = disabled_servers.pop(name, servers.get(name))
+        if cfg is not None:
+            cfg.pop("disabled", None)
+            servers[name] = cfg
+    return False
+
+
+def _mask_mapping(values: Optional[dict]) -> dict:
+    if not values:
+        return {}
+    masked = {}
+    for k, v in values.items():
+        value = str(v)
+        if any(s in k.lower() for s in ("token", "key", "secret", "password", "credential", "auth")):
+            masked[k] = value[:4] + "***" if len(value) > 4 else "***"
+        else:
+            masked[k] = value
+    return masked
+
+
+def _mcp_transport(cfg: dict) -> str:
+    transport = str(cfg.get("type") or cfg.get("transport") or "").strip().lower()
+    if transport:
+        return transport
+    if cfg.get("url"):
+        return "http"
+    return "stdio"
+
+
+def _format_mcp_server(name: str, cfg: dict, source: dict, disabled: bool) -> dict:
+    transport = _mcp_transport(cfg)
+    return {
+        "name": name,
+        "scope": source["scope"],
+        "scope_label": _source_label(source["scope"]),
+        "config_path": str(source["path"]),
+        "type": transport,
+        "command": cfg.get("command", ""),
+        "args": cfg.get("args", []) if isinstance(cfg.get("args", []), list) else [],
+        "url": cfg.get("url", ""),
+        "env": _mask_mapping(cfg.get("env") if isinstance(cfg.get("env"), dict) else {}),
+        "headers": _mask_mapping(cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}),
+        "disabled": disabled,
+    }
+
+
+def _stdio_config_from_request(req: "McpServerRequest") -> dict:
+    command = (req.command or "").strip()
+    if not command:
+        raise HTTPException(status_code=400, detail="command is required")
+    cfg = {
+        "type": "stdio",
+        "command": command,
+        "args": req.args or [],
+    }
+    if req.env:
+        cfg["env"] = req.env
+    return cfg
+
+
+class McpServerRequest(BaseModel):
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    disabled: Optional[bool] = None
+
+
+class McpServerPatchRequest(BaseModel):
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    env: Optional[Dict[str, str]] = None
+    disabled: Optional[bool] = None
+
+
+@app.get("/api/mcp/servers")
+async def list_mcp_servers(cwd: Optional[str] = Query(default=None)):
+    sources = _mcp_sources(cwd)
+    result = []
+    for source in sources:
+        servers = source.get("servers") or {}
+        for name, cfg in servers.items():
+            if isinstance(cfg, dict):
+                result.append(_format_mcp_server(name, cfg, source, _is_mcp_disabled(source, name)))
+        for name, cfg in (source.get("disabled_servers") or {}).items():
+            if name not in servers and isinstance(cfg, dict):
+                result.append(_format_mcp_server(name, cfg, source, True))
+    return {
+        "servers": result,
+        "cwd": str(_resolve_mcp_cwd(cwd)),
+        "config_path": str(_CLAUDE_CONFIG_PATH),
+        "config_paths": {
+            "user": str(_CLAUDE_CONFIG_PATH),
+            "local": str(_CLAUDE_CONFIG_PATH),
+            "project": str(_resolve_mcp_cwd(cwd) / _PROJECT_MCP_FILENAME),
+        },
+    }
+
+
+@app.post("/api/mcp/servers/{name}")
+async def add_mcp_server(
+    name: str,
+    req: McpServerRequest,
+    cwd: Optional[str] = Query(default=None),
+    scope: str = Query(default="local"),
+):
+    target = _mcp_target(scope, cwd)
+    if _mcp_config_in_source(target, name) is not None:
+        raise HTTPException(status_code=409, detail=f"server '{name}' already exists")
+    cfg = _stdio_config_from_request(req)
+    if req.disabled:
+        if target["scope"] == "project":
+            target["servers"][name] = cfg
+            save_choices = _set_mcp_disabled(target, name, True)
+            _save_mcp_source(target, save_claude_choices=save_choices)
+        else:
+            target["disabled_servers"][name] = cfg
+            _save_mcp_source(target)
+    else:
+        target["servers"][name] = cfg
+        _save_mcp_source(target)
+    return {"ok": True}
+
+
+@app.patch("/api/mcp/servers/{name}")
+async def patch_mcp_server(
+    name: str,
+    req: McpServerPatchRequest,
+    cwd: Optional[str] = Query(default=None),
+    scope: Optional[str] = Query(default=None),
+):
+    target = _find_mcp_source(name, scope, cwd)
+    cfg = _mcp_config_in_source(target, name)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail=f"server '{name}' not found")
+    if req.command is not None:
+        command = req.command.strip()
+        if not command:
+            raise HTTPException(status_code=400, detail="command is required")
+        cfg["command"] = command
+        cfg.setdefault("type", "stdio")
+    if req.args is not None:
+        cfg["args"] = req.args
+    if req.env is not None:
+        cfg["env"] = req.env
+    save_choices = False
+    cfg.pop("disabled", None)
+    if req.disabled is not None:
+        save_choices = _set_mcp_disabled(target, name, req.disabled)
+    _save_mcp_source(target, save_claude_choices=save_choices)
+    return {"ok": True}
+
+
+@app.delete("/api/mcp/servers/{name}")
+async def delete_mcp_server(
+    name: str,
+    cwd: Optional[str] = Query(default=None),
+    scope: Optional[str] = Query(default=None),
+):
+    target = _find_mcp_source(name, scope, cwd)
+    target["servers"].pop(name, None)
+    if target["scope"] == "project":
+        save_choices = _set_mcp_disabled(target, name, False)
+        _save_mcp_source(target, save_claude_choices=save_choices)
+    else:
+        target["disabled_servers"].pop(name, None)
+        _save_mcp_source(target)
+    return {"ok": True}
 
 
 @app.get("/api/cwds")

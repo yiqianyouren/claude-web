@@ -571,7 +571,8 @@
 
   <div class="px-3 py-2.5 text-[12px] flex items-center justify-between gap-2" style="border-top:1px solid var(--border); color:var(--text-muted);">
     <button id="statsBar" class="hover:underline flex items-center gap-1" style="color:var(--text);" title="查看统计">💰 $0.00</button>
-    <button id="settingsBtn" class="hover:underline flex items-center gap-1" style="color:var(--text);">⚙️ 设置</button>
+    <button id="mcpBtn" class="hover:underline flex items-center gap-1" style="color:var(--text);" title="MCP 管理">🔌</button>
+    <button id="settingsBtn" class="hover:underline flex items-center gap-1" style="color:var(--text);">⚙️</button>
   </div>
 </aside>
 
@@ -660,7 +661,7 @@
   <footer class="px-4 pt-2 pb-5" style="background:var(--bg);">
     <form id="form" class="max-w-3xl mx-auto relative">
       <input type="file" id="fileInput" accept="image/*" multiple class="hidden" />
-      <input type="file" id="docInput" accept=".pdf,.docx,.csv,.tsv,.txt,.md,.json,.log" multiple class="hidden" />
+      <input type="file" id="docInput" accept=".pdf,.docx,.csv,.tsv,.txt,.md,.json,.log,.xlsx,.xls" multiple class="hidden" />
       <div class="composer" id="composer">
         <textarea id="input" rows="1" placeholder="输入消息，让 Claude 帮你..."
           class="composer-textarea"></textarea>
@@ -669,7 +670,7 @@
             <button type="button" id="attachBtn" class="composer-btn" title="上传图片 (支持粘贴/拖拽)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21 12-8.5 8.5a5 5 0 0 1-7-7L13 5a3.5 3.5 0 0 1 5 5L9.5 18.5a2 2 0 0 1-3-3L15 7"/></svg>
             </button>
-            <button type="button" id="docAttachBtn" class="composer-btn" title="上传文档 (PDF/Word/CSV/TXT/MD)">
+            <button type="button" id="docAttachBtn" class="composer-btn" title="上传文档 (PDF/Word/Excel/CSV/TXT/MD)">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             </button>
             <button type="button" id="webSearchBtn" class="composer-btn" title="联网搜索">
@@ -808,6 +809,36 @@
       <div class="text-sm font-semibold mb-2">工具使用排行</div>
       <canvas id="toolsChart" height="80"></canvas>
     </div>
+  </div>
+</div>
+
+<!-- MCP Management modal -->
+<div id="mcpModal" class="modal-backdrop hidden">
+  <div class="modal-box lg p-5" style="max-width:680px;">
+    <div class="flex items-center justify-between mb-4">
+      <div class="text-lg font-semibold">🔌 MCP Servers</div>
+      <button data-close class="text-xl">×</button>
+    </div>
+    <div class="text-xs mb-3" style="color:var(--text-muted);">
+      管理 Claude Code 的 MCP 工具服务器。修改后需新建会话才生效。
+      <span id="mcpConfigPath" class="ml-2" style="color:var(--text-subtle);"></span>
+    </div>
+    <div id="mcpServerList" class="space-y-2 max-h-[50vh] overflow-y-auto mb-4"></div>
+    <details class="border rounded-lg p-3" style="border-color:var(--border);">
+      <summary class="text-sm font-medium cursor-pointer" style="color:var(--text);">＋ 添加 stdio MCP Server</summary>
+      <div class="mt-3 space-y-2">
+        <select id="mcpNewScope" class="w-full px-3 py-1.5 text-sm">
+          <option value="local">Local（当前目录）</option>
+          <option value="user">User（全局）</option>
+          <option value="project">Project（.mcp.json）</option>
+        </select>
+        <input id="mcpNewName" placeholder="名称（如 github）" class="w-full px-3 py-1.5 text-sm" />
+        <input id="mcpNewCmd" placeholder="命令（如 npx）" class="w-full px-3 py-1.5 text-sm" />
+        <input id="mcpNewArgs" placeholder="参数（空格分隔，如 -y @modelcontextprotocol/server-github）" class="w-full px-3 py-1.5 text-sm" />
+        <input id="mcpNewEnv" placeholder="环境变量（KEY=VALUE 逗号分隔，如 GITHUB_TOKEN=ghp_xxx）" class="w-full px-3 py-1.5 text-sm" />
+        <button id="mcpAddBtn" class="btn btn-primary text-xs" style="padding:6px 14px;">添加</button>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -1991,14 +2022,66 @@ fileInput.addEventListener('change', async () => {
   fileInput.value = '';
   for (const f of files) await uploadFile(f);
 });
-document.addEventListener('paste', (e) => {
-  const items = Array.from(e.clipboardData?.items || []);
-  for (const it of items) {
-    if (it.type.startsWith('image/')) {
-      const f = it.getAsFile();
-      if (f) uploadFile(f);
-    }
+const DOC_EXTENSIONS = new Set(['.pdf','.docx','.csv','.tsv','.txt','.md','.json','.log','.xlsx','.xls']);
+const DOC_MIME_TYPES = new Set([
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+  'text/csv',
+  'text/tab-separated-values',
+  'text/markdown',
+  'application/json',
+  'text/plain',
+]);
+
+function fileExtension(file) {
+  const name = file?.name || '';
+  const idx = name.lastIndexOf('.');
+  return idx >= 0 ? name.slice(idx).toLowerCase() : '';
+}
+
+function isDocFile(file) {
+  return DOC_EXTENSIONS.has(fileExtension(file)) || DOC_MIME_TYPES.has(file?.type || '');
+}
+
+function filesFromTransfer(dt) {
+  const files = [];
+  const seen = new Set();
+  const add = (file) => {
+    if (!file) return;
+    const key = [file.name, file.size, file.type, file.lastModified].join(':');
+    if (seen.has(key)) return;
+    seen.add(key);
+    files.push(file);
+  };
+  Array.from(dt?.files || []).forEach(add);
+  Array.from(dt?.items || []).forEach(item => {
+    if (item.kind === 'file') add(item.getAsFile());
+  });
+  return files;
+}
+
+async function handleInputFile(file) {
+  if (!file) return false;
+  if (file.type.startsWith('image/')) {
+    await uploadFile(file);
+    return true;
   }
+  if (isDocFile(file)) {
+    await uploadDocFile(file);
+    return true;
+  }
+  return false;
+}
+
+document.addEventListener('paste', async (e) => {
+  const files = filesFromTransfer(e.clipboardData);
+  let handled = false;
+  for (const file of files) {
+    handled = await handleInputFile(file) || handled;
+  }
+  if (handled) e.preventDefault();
 });
 ['dragenter','dragover'].forEach(ev => {
   form.addEventListener(ev, (e) => { e.preventDefault(); form.classList.add('drag-active'); });
@@ -2008,7 +2091,7 @@ document.addEventListener('paste', (e) => {
 });
 form.addEventListener('drop', (e) => {
   const files = Array.from(e.dataTransfer?.files || []);
-  for (const f of files) if (f.type.startsWith('image/')) uploadFile(f);
+  for (const f of files) handleInputFile(f);
 });
 
 function renderAttachments() {
@@ -2848,19 +2931,23 @@ function clearUrlContext() {
 const pendingDocs = []; // {name, content, length, truncated}
 
 docAttachBtn.addEventListener('click', () => docInput.click());
+
+async function uploadDocFile(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/api/upload-doc', { method:'POST', body: fd });
+    if (!r.ok) { const d = await r.json().catch(()=>({})); alert('上传失败: ' + (d.detail || r.status)); return; }
+    const data = await r.json();
+    pendingDocs.push(data);
+    renderDocChips();
+  } catch (e) { alert('上传出错: ' + e.message); }
+}
+
 docInput.addEventListener('change', async () => {
   const files = Array.from(docInput.files || []);
   docInput.value = '';
-  for (const f of files) {
-    const fd = new FormData();
-    fd.append('file', f);
-    try {
-      const r = await fetch('/api/upload-doc', { method:'POST', body: fd });
-      if (!r.ok) { const d = await r.json().catch(()=>({})); alert('上传失败: ' + (d.detail || r.status)); continue; }
-      const data = await r.json();
-      pendingDocs.push(data);
-    } catch (e) { alert('上传出错: ' + e.message); }
-  }
+  for (const f of files) await uploadDocFile(f);
   renderDocChips();
 });
 
@@ -3012,6 +3099,147 @@ function updateTabStyles() {
   const activeBtn = archivedView ? viewArchivedBtn : viewActiveBtn;
   activeBtn.style.color = 'var(--text)';
 }
+
+// ===== MCP management =====
+const mcpModal = $('mcpModal');
+const mcpBtn = $('mcpBtn');
+const mcpServerList = $('mcpServerList');
+const mcpConfigPath = $('mcpConfigPath');
+const mcpAddBtn = $('mcpAddBtn');
+
+mcpBtn.addEventListener('click', () => { openModal(mcpModal); refreshMcpServers(); });
+
+function currentMcpCwd() {
+  return cwdInput.value.trim() || '~';
+}
+
+function mcpQuery(extra = {}) {
+  const params = new URLSearchParams({ cwd: currentMcpCwd(), ...extra });
+  return '?' + params.toString();
+}
+
+async function mcpErrorMessage(resp) {
+  const data = await resp.json().catch(() => ({}));
+  return data.detail || resp.status;
+}
+
+function mcpServerCommand(s) {
+  const type = (s.type || 'stdio').toLowerCase();
+  if (type === 'stdio') {
+    return `${s.command || ''} ${(s.args || []).join(' ')}`.trim();
+  }
+  return `${type.toUpperCase()} ${s.url || ''}`.trim();
+}
+
+function mcpSecretBadges(values) {
+  return Object.entries(values || {}).map(([k, v]) => `
+    <span class="px-1.5 py-0.5 rounded" style="background:var(--surface); font-size:10px;">${escapeHtml(k)}=${escapeHtml(v)}</span>
+  `).join('');
+}
+
+async function refreshMcpServers() {
+  try {
+    const r = await fetch('/api/mcp/servers' + mcpQuery());
+    if (!r.ok) {
+      mcpServerList.innerHTML = `<div class="text-sm" style="color:#ef4444;">加载失败: ${escapeHtml(await mcpErrorMessage(r))}</div>`;
+      return;
+    }
+    const data = await r.json();
+    mcpConfigPath.textContent = '目录: ' + (data.cwd || currentMcpCwd());
+    if (data.config_paths) {
+      mcpConfigPath.title = Object.entries(data.config_paths).map(([k, v]) => `${k}: ${v}`).join('\n');
+    }
+    const servers = data.servers || [];
+    if (servers.length === 0) {
+      mcpServerList.innerHTML = '<div class="text-center py-6 text-sm" style="color:var(--text-subtle);">暂无 MCP Server 配置</div>';
+      return;
+    }
+    mcpServerList.innerHTML = servers.map(s => `
+      <div class="p-3 rounded-lg" style="background:var(--surface-2); border:1px solid var(--border);">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <span style="color:${s.disabled ? 'var(--text-subtle)' : '#10b981'};">${s.disabled ? '⬜' : '🟢'}</span>
+            <span class="font-medium text-sm ${s.disabled ? 'line-through opacity-60' : ''}">${escapeHtml(s.name)}</span>
+            <span class="px-1.5 py-0.5 rounded text-[10px]" style="background:var(--surface); color:var(--text-subtle);">${escapeHtml(s.scope_label || s.scope || '')}</span>
+          </div>
+          <div class="flex items-center gap-1">
+            <button data-mcp-toggle="${escapeHtml(s.name)}" data-mcp-scope="${escapeHtml(s.scope)}" data-disabled="${s.disabled}" class="text-xs px-2 py-1 rounded" style="background:var(--surface); border:1px solid var(--border);">
+              ${s.disabled ? '启用' : '禁用'}
+            </button>
+            <button data-mcp-del="${escapeHtml(s.name)}" data-mcp-scope="${escapeHtml(s.scope)}" class="text-xs px-2 py-1 rounded" style="background:var(--surface); border:1px solid var(--border); color:#ef4444;">
+              删除
+            </button>
+          </div>
+        </div>
+        <div class="mt-1.5 text-xs" style="color:var(--text-muted);">
+          <code style="font-size:11px;">${escapeHtml(mcpServerCommand(s))}</code>
+        </div>
+        ${Object.keys(s.env || {}).length > 0 || Object.keys(s.headers || {}).length > 0 ? `
+          <div class="mt-1 text-xs flex flex-wrap gap-1" style="color:var(--text-subtle);">
+            ${mcpSecretBadges(s.env)}${mcpSecretBadges(s.headers)}
+          </div>
+        ` : ''}
+      </div>
+    `).join('');
+
+    mcpServerList.querySelectorAll('[data-mcp-toggle]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const name = btn.dataset.mcpToggle;
+        const isDisabled = btn.dataset.disabled === 'true';
+        const r = await fetch('/api/mcp/servers/' + encodeURIComponent(name) + mcpQuery({ scope: btn.dataset.mcpScope }), {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ disabled: !isDisabled }),
+        });
+        if (!r.ok) { alert('操作失败: ' + await mcpErrorMessage(r)); return; }
+        refreshMcpServers();
+      });
+    });
+
+    mcpServerList.querySelectorAll('[data-mcp-del]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm(`删除 MCP Server "${btn.dataset.mcpDel}"？`)) return;
+        const r = await fetch('/api/mcp/servers/' + encodeURIComponent(btn.dataset.mcpDel) + mcpQuery({ scope: btn.dataset.mcpScope }), { method: 'DELETE' });
+        if (!r.ok) { alert('删除失败: ' + await mcpErrorMessage(r)); return; }
+        refreshMcpServers();
+      });
+    });
+  } catch (e) {
+    mcpServerList.innerHTML = `<div class="text-sm" style="color:#ef4444;">加载失败: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+mcpAddBtn.addEventListener('click', async () => {
+  const scope = $('mcpNewScope').value;
+  const name = $('mcpNewName').value.trim();
+  const cmd = $('mcpNewCmd').value.trim();
+  const argsStr = $('mcpNewArgs').value.trim();
+  const envStr = $('mcpNewEnv').value.trim();
+  if (!name || !cmd) { alert('名称和命令必填'); return; }
+  const args = argsStr ? argsStr.split(/\s+/) : [];
+  const env = {};
+  if (envStr) {
+    envStr.split(',').forEach(pair => {
+      const [k, ...rest] = pair.split('=');
+      if (k && rest.length) env[k.trim()] = rest.join('=').trim();
+    });
+  }
+  const r = await fetch('/api/mcp/servers/' + encodeURIComponent(name) + mcpQuery({ scope }), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ command: cmd, args, env: Object.keys(env).length ? env : null }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    alert('添加失败: ' + (d.detail || r.status));
+    return;
+  }
+  $('mcpNewName').value = '';
+  $('mcpNewCmd').value = '';
+  $('mcpNewArgs').value = '';
+  $('mcpNewEnv').value = '';
+  refreshMcpServers();
+});
 
 // ===== init =====
 restoreDraft();
