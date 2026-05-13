@@ -42,12 +42,70 @@ KNOWN_TOOL_NAMES = {
 
 app = FastAPI(title="Claude Code Web")
 
+
+@app.on_event("shutdown")
+async def _shutdown_terminate_running_processes() -> None:
+    if not _running_processes:
+        return
+    processes = list(_running_processes.values())
+    _running_processes.clear()
+    await asyncio.gather(
+        *(_terminate_process(p) for p in processes),
+        return_exceptions=True,
+    )
+
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
 
 
+async def _terminate_process(process: asyncio.subprocess.Process, grace: float = 3.0) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=grace)
+        return
+    except asyncio.TimeoutError:
+        pass
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2.0)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def _drain_stream(stream: asyncio.StreamReader, buffer: bytearray, limit: int = 256 * 1024) -> None:
+    try:
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                return
+            remaining = limit - len(buffer)
+            if remaining > 0:
+                buffer.extend(chunk[:remaining])
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return
+
+
+_DB_INITIALIZED = False
+
+
 def db_connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    global _DB_INITIALIZED
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    if not _DB_INITIALIZED:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _DB_INITIALIZED = True
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -141,9 +199,17 @@ def save_events(session_id: str, events: List[dict]) -> None:
         if path.exists():
             path.unlink()
         return
-    with path.open("w", encoding="utf-8") as f:
-        for event in events:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def summarize_text_from_events(events: List[dict]) -> str:
@@ -493,6 +559,11 @@ async def chat(req: ChatRequest):
             return
 
         _running_processes[session_id] = process
+        stderr_buffer = bytearray()
+        stderr_task: Optional[asyncio.Task] = None
+        if process.stderr is not None:
+            stderr_task = asyncio.create_task(_drain_stream(process.stderr, stderr_buffer))
+
         try:
             assert process.stdout is not None
             while True:
@@ -520,16 +591,24 @@ async def chat(req: ChatRequest):
                 yield f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
             rc = await process.wait()
-            err = b""
-            if process.stderr is not None:
-                err = await process.stderr.read()
+            if stderr_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(stderr_task), timeout=1.0)
+                except asyncio.TimeoutError:
+                    pass
             if rc != 0:
-                err_event = classify_claude_error(
-                    err.decode("utf-8", errors="replace") or f"claude exited with code {rc}"
-                )
+                err_text = bytes(stderr_buffer).decode("utf-8", errors="replace")
+                err_event = classify_claude_error(err_text or f"claude exited with code {rc}")
                 append_event(session_id, err_event)
                 yield f"data: {json.dumps(err_event, ensure_ascii=False)}\n\n"
         finally:
+            if stderr_task is not None and not stderr_task.done():
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            await _terminate_process(process)
             _running_processes.pop(session_id, None)
 
         upsert_session(session_id, derive_title(display_text), work_dir)
@@ -549,10 +628,7 @@ async def stop_chat(session_id: str):
     process = _running_processes.get(session_id)
     if process is None:
         raise HTTPException(status_code=404, detail="no running process for this session")
-    try:
-        process.send_signal(signal.SIGTERM)
-    except ProcessLookupError:
-        pass
+    await _terminate_process(process)
     stop_event = {"type": "error", "message": "用户中止", "ts": time.time()}
     append_event(session_id, stop_event)
     return {"ok": True}
@@ -845,6 +921,8 @@ async def upload_doc(file: UploadFile = File(...)):
             text = _extract_xlsx_text(path)
         elif ext == ".xls":
             text = _extract_xls_text(path)
+        elif ext in (".html", ".htm", ".xhtml"):
+            text = _extract_html_text(_decode_text_upload(data))
         else:
             text = _decode_text_upload(data)
     except HTTPException:
@@ -1587,12 +1665,46 @@ async def stats():
     }
 
 
+async def _list_files_via_git(base: Path, q_lower: str, limit: int) -> Optional[List[dict]]:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", str(base), "ls-files",
+            "--cached", "--others", "--exclude-standard",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        if proc.returncode != 0:
+            return None
+    except (FileNotFoundError, asyncio.TimeoutError):
+        return None
+    except Exception:
+        return None
+
+    results: List[dict] = []
+    for rel in stdout.decode("utf-8", errors="replace").splitlines():
+        rel = rel.strip()
+        if not rel:
+            continue
+        if q_lower and q_lower not in rel.lower():
+            continue
+        results.append({"path": str(base / rel), "rel": rel})
+        if len(results) >= limit:
+            break
+    return results
+
+
 @app.get("/api/files")
 async def list_files(cwd: str = Query(...), q: str = Query(default=""), limit: int = Query(default=30)):
     base = Path(os.path.expanduser(cwd)).resolve()
     if not base.exists() or not base.is_dir():
         return []
     q_lower = q.lower()
+
+    git_results = await _list_files_via_git(base, q_lower, limit)
+    if git_results is not None:
+        return git_results
+
     results: List[dict] = []
     for root, dirs, files in os.walk(str(base)):
         dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
@@ -1649,29 +1761,142 @@ class _TextExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self._parts: List[str] = []
         self._skip_depth = 0
+        self._table_depth = 0
+        self._active_rowspans: Dict[int, int] = {}
+        self._new_rowspans: Dict[int, int] = {}
+        self._current_row: Optional[List[str]] = None
+        self._current_cell: Optional[List[str]] = None
+        self._current_colspan = 1
+        self._current_rowspan = 1
 
     def handle_starttag(self, tag: str, attrs: List) -> None:
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
+        elif self._skip_depth > 0:
+            return
+        elif tag == "table":
+            if self._table_depth == 0:
+                self._parts.append("\n")
+                self._active_rowspans = {}
+            self._table_depth += 1
+        elif self._table_depth > 0:
+            if self._table_depth == 1 and tag == "tr":
+                self._start_table_row()
+            elif self._table_depth == 1 and tag in {"td", "th"}:
+                self._start_table_cell(attrs)
+            elif tag == "br" and self._current_cell is not None:
+                self._current_cell.append("\n")
         elif tag in {"p", "br", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "tr"}:
             self._parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
         if tag in self._SKIP_TAGS and self._skip_depth > 0:
             self._skip_depth -= 1
+        elif self._skip_depth > 0:
+            return
+        elif tag in {"td", "th"} and self._table_depth == 1:
+            self._end_table_cell()
+        elif tag == "tr" and self._table_depth == 1:
+            self._end_table_row()
+        elif tag == "table" and self._table_depth > 0:
+            if self._table_depth == 1:
+                self._end_table_cell()
+                self._end_table_row()
+                self._parts.append("\n")
+            self._table_depth -= 1
 
     def handle_data(self, data: str) -> None:
         if self._skip_depth > 0:
             return
         chunk = data.strip()
         if chunk:
-            self._parts.append(chunk)
+            if self._table_depth > 0 and self._current_cell is not None:
+                self._current_cell.append(chunk)
+            elif self._table_depth == 0:
+                self._parts.append(chunk)
 
     def get_text(self) -> str:
         raw = " ".join(self._parts)
         collapsed = re.sub(r"[ \t]+", " ", raw)
         collapsed = re.sub(r"\n\s*", "\n", collapsed)
+        collapsed = re.sub(r" +\n", "\n", collapsed)
         return re.sub(r"\n{3,}", "\n\n", collapsed).strip()
+
+    def _span_value(self, attrs: List, name: str) -> int:
+        value = dict(attrs).get(name)
+        try:
+            return max(1, min(int(value or 1), 100))
+        except ValueError:
+            return 1
+
+    def _start_table_row(self) -> None:
+        self._end_table_cell()
+        self._end_table_row()
+        self._current_row = []
+        self._new_rowspans = {}
+
+    def _start_table_cell(self, attrs: List) -> None:
+        if self._current_row is None:
+            self._start_table_row()
+        self._end_table_cell()
+        self._current_cell = []
+        self._current_colspan = self._span_value(attrs, "colspan")
+        self._current_rowspan = self._span_value(attrs, "rowspan")
+
+    def _end_table_cell(self) -> None:
+        if self._current_cell is None or self._current_row is None:
+            return
+
+        col = len(self._current_row)
+        while self._active_rowspans.get(col, 0) > 0:
+            self._current_row.append("")
+            col += 1
+
+        text = re.sub(r"\s+", " ", " ".join(self._current_cell)).strip()
+        for offset in range(self._current_colspan):
+            self._current_row.append(text if offset == 0 else "")
+            if self._current_rowspan > 1:
+                self._new_rowspans[col + offset] = max(
+                    self._new_rowspans.get(col + offset, 0),
+                    self._current_rowspan - 1,
+                )
+
+        self._current_cell = None
+        self._current_colspan = 1
+        self._current_rowspan = 1
+
+    def _end_table_row(self) -> None:
+        if self._current_row is None:
+            return
+
+        self._end_table_cell()
+        if self._active_rowspans:
+            max_col = max(self._active_rowspans)
+            while len(self._current_row) <= max_col:
+                self._current_row.append("")
+
+        if any(cell for cell in self._current_row):
+            self._parts.append("| " + " | ".join(self._current_row) + " |")
+            self._parts.append("\n")
+
+        next_rowspans = {
+            col: remaining - 1
+            for col, remaining in self._active_rowspans.items()
+            if remaining > 1
+        }
+        for col, remaining in self._new_rowspans.items():
+            next_rowspans[col] = max(next_rowspans.get(col, 0), remaining)
+
+        self._active_rowspans = next_rowspans
+        self._new_rowspans = {}
+        self._current_row = None
+
+
+def _extract_html_text(html: str) -> str:
+    extractor = _TextExtractor()
+    extractor.feed(html)
+    extractor.close()
+    return extractor.get_text()
 
 
 def _is_private_host(host: str) -> bool:
@@ -1714,9 +1939,7 @@ async def fetch_url(req: FetchUrlRequest):
         html = raw.decode(charset, errors="replace")
         title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
         title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else req.url
-        extractor = _TextExtractor()
-        extractor.feed(html)
-        text = extractor.get_text()
+        text = _extract_html_text(html)
         return {"title": title, "content": text}
 
     try:
@@ -1744,9 +1967,31 @@ async def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+def _check_claude_cli() -> Optional[str]:
+    """Return claude CLI version string if available, else None."""
+    import shutil
+    import subprocess
+
+    if shutil.which("claude") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["claude", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip() or "unknown"
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return "unknown"
+
+
 def main():
     """CLI entry point for `claude-web` command."""
     import argparse
+    import sys
     import uvicorn
 
     parser = argparse.ArgumentParser(description="Claude Code Web - Web UI for Claude Code CLI")
@@ -1754,6 +1999,7 @@ def main():
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     parser.add_argument("--open", action="store_true", help="Open browser after starting")
     parser.add_argument("--version", "-v", action="store_true", help="Show version")
+    parser.add_argument("--skip-cli-check", action="store_true", help="Skip claude CLI availability check on startup")
     args = parser.parse_args()
 
     if args.version:
@@ -1764,6 +2010,20 @@ def main():
     print(f"Claude Code Web v{__import__('claude_web').__version__}")
     print(f"  → http://{args.host}:{args.port}")
     print(f"  → Data: {_DATA_DIR}")
+
+    if not args.skip_cli_check:
+        claude_version = _check_claude_cli()
+        if claude_version is None:
+            print()
+            print("  ✗ claude CLI not found in PATH", file=sys.stderr)
+            print("    claude-web wraps the Claude Code CLI — install it first:", file=sys.stderr)
+            print("      npm install -g @anthropic-ai/claude-code", file=sys.stderr)
+            print("    Then run `claude` once to log in. Docs: https://docs.claude.com/claude-code", file=sys.stderr)
+            print("    (Use --skip-cli-check to bypass this check.)", file=sys.stderr)
+            print()
+            sys.exit(1)
+        print(f"  → Claude CLI: {claude_version}")
+
     print()
 
     if args.open:

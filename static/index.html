@@ -886,6 +886,9 @@ const settings = {
 
 let sessionId = null;
 let pendingImages = [];
+let pendingImageKeys = new Set();
+let activeImageUploadKeys = new Set();
+let pendingImageGeneration = 0;
 let currentController = null;
 let archivedView = false;
 let activeTagFilter = null;
@@ -2004,17 +2007,45 @@ async function restoreCheckpoint(userIdx) {
 
 
 // ===== image upload =====
+async function imageFileKey(file) {
+  const prefix = `${file.type || 'image'}:${file.size}`;
+  try {
+    if (window.crypto?.subtle && file.arrayBuffer) {
+      const digest = await window.crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const hash = Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('');
+      return `${prefix}:${hash}`;
+    }
+  } catch {}
+  return `${prefix}:${file.name || ''}:${file.lastModified || 0}`;
+}
+
+function clearPendingImages() {
+  pendingImageGeneration += 1;
+  pendingImages = [];
+  pendingImageKeys.clear();
+  activeImageUploadKeys.clear();
+  renderAttachments();
+}
+
 async function uploadFile(file) {
   if (!file || !file.type.startsWith('image/')) return;
+  const imageKey = await imageFileKey(file);
+  if (pendingImageKeys.has(imageKey) || activeImageUploadKeys.has(imageKey)) return;
+  activeImageUploadKeys.add(imageKey);
+  const uploadGeneration = pendingImageGeneration;
   const fd = new FormData();
   fd.append('file', file);
   try {
     const r = await fetch('/api/upload', { method:'POST', body: fd });
     if (!r.ok) { alert('上传失败: ' + r.status); return; }
     const data = await r.json();
+    if (uploadGeneration !== pendingImageGeneration) return;
+    data._imageKey = imageKey;
     pendingImages.push(data);
+    pendingImageKeys.add(imageKey);
     renderAttachments();
   } catch (e) { alert('上传出错: ' + e.message); }
+  finally { activeImageUploadKeys.delete(imageKey); }
 }
 attachBtn.addEventListener('click', () => fileInput.click());
 fileInput.addEventListener('change', async () => {
@@ -2032,10 +2063,13 @@ function filesFromTransfer(dt) {
     seen.add(key);
     files.push(file);
   };
-  Array.from(dt?.files || []).forEach(add);
-  Array.from(dt?.items || []).forEach(item => {
-    if (item.kind === 'file') add(item.getAsFile());
-  });
+  const transferFiles = Array.from(dt?.files || []);
+  transferFiles.forEach(add);
+  if (transferFiles.length === 0) {
+    Array.from(dt?.items || []).forEach(item => {
+      if (item.kind === 'file') add(item.getAsFile());
+    });
+  }
   return files;
 }
 
@@ -2083,7 +2117,11 @@ function renderAttachments() {
     </div>
   `).join('');
   attachmentsEl.querySelectorAll('button[data-idx]').forEach(b => {
-    b.addEventListener('click', () => { pendingImages.splice(Number(b.dataset.idx), 1); renderAttachments(); });
+    b.addEventListener('click', () => {
+      const removed = pendingImages.splice(Number(b.dataset.idx), 1)[0];
+      if (removed?._imageKey) pendingImageKeys.delete(removed._imageKey);
+      renderAttachments();
+    });
   });
 }
 
@@ -2214,8 +2252,7 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
 
   if (!isFork) {
     addUserMessage(message, imagePaths);
-    pendingImages = [];
-    renderAttachments();
+    clearPendingImages();
     clearDraft();
     clearUrlContext();
     clearDocs();
@@ -2348,8 +2385,7 @@ function startNewSession() {
   suggestTitleBtn.classList.add('hidden');
   chatInner.innerHTML = '';
   chatInner.appendChild(welcome);
-  pendingImages = [];
-  renderAttachments();
+  clearPendingImages();
   clearUrlContext();
   clearDocs();
   hideTodoPanel();
