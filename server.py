@@ -44,6 +44,7 @@ KNOWN_TOOL_NAMES = {
 
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
 _stopped_sessions: Set[str] = set()
+_compacting_sessions: Set[str] = set()
 
 
 async def _terminate_process(process: asyncio.subprocess.Process, grace: float = 3.0) -> None:
@@ -181,12 +182,42 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS session_usage (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_idx INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+                total_cost_usd REAL NOT NULL DEFAULT 0,
+                ts REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                scope TEXT NOT NULL DEFAULT 'global',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
         ensure_column(conn, "sessions", "pinned", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "archived", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "tags", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "sessions", "manual_title", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "remote_session_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "sessions", "remote_ready", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "prompts", "slash_trigger", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_session_usage_session ON session_usage(session_id, turn_idx)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, enabled)")
 
 
 init_db()
@@ -217,6 +248,86 @@ def append_event(session_id: str, event: dict) -> None:
     path = HISTORY_DIR / f"{session_id}.jsonl"
     with path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def record_usage(session_id: str, result_event: dict) -> None:
+    usage = result_event.get("usage") or {}
+    if not isinstance(usage, dict):
+        return
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    cache_read = int(usage.get("cache_read_input_tokens") or 0)
+    cache_create = int(usage.get("cache_creation_input_tokens") or 0)
+    cost = float(result_event.get("total_cost_usd") or 0)
+    if input_tokens == 0 and output_tokens == 0 and cache_read == 0 and cache_create == 0 and cost == 0:
+        return
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO session_usage (
+                id, session_id, turn_idx, input_tokens, output_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens,
+                total_cost_usd, ts
+            ) VALUES (
+                ?, ?,
+                COALESCE((SELECT MAX(turn_idx) FROM session_usage WHERE session_id = ?), 0) + 1,
+                ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                uuid.uuid4().hex, session_id, session_id, input_tokens, output_tokens,
+                cache_read, cache_create, cost, time.time(),
+            ),
+        )
+
+
+def normalize_memory_scope(scope: Optional[str]) -> str:
+    raw_scope = (scope or "global").strip() or "global"
+    if raw_scope.startswith("project:"):
+        raw_path = raw_scope[len("project:") :].strip()
+        if raw_path:
+            return "project:" + str(Path(os.path.expanduser(raw_path)).resolve())
+        return "global"
+    if raw_scope.startswith("session:") and raw_scope[len("session:") :].strip():
+        return raw_scope
+    if raw_scope == "global":
+        return "global"
+    return raw_scope
+
+
+def matching_memory_scopes(cwd: str, session_id: str) -> List[str]:
+    scopes = ["global"]
+    if cwd:
+        scopes.append(normalize_memory_scope(f"project:{cwd}"))
+    if session_id:
+        scopes.append(f"session:{session_id}")
+    return scopes
+
+
+def load_enabled_memories(cwd: str, session_id: str) -> List[dict]:
+    scopes = matching_memory_scopes(cwd, session_id)
+    placeholders = ",".join("?" for _ in scopes)
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, content, enabled, scope, created_at, updated_at
+            FROM memories
+            WHERE enabled = 1 AND scope IN ({placeholders})
+            ORDER BY scope, updated_at DESC
+            """,
+            scopes,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def compose_system_prompt(memory_items: List[dict], user_system_prompt: Optional[str]) -> Optional[str]:
+    parts: List[str] = []
+    if memory_items:
+        memory_text = "\n".join(f"- {m['content']}" for m in memory_items if m.get("content"))
+        parts.append("Persistent memory for this user/project/session:\n" + memory_text)
+    if user_system_prompt:
+        parts.append(user_system_prompt)
+    return "\n\n".join(parts) if parts else None
 
 
 def load_events(session_id: str) -> List[dict]:
@@ -289,6 +400,13 @@ class ChatRequest(BaseModel):
 class PromptRequest(BaseModel):
     name: str
     content: str
+    slash_trigger: Optional[str] = ""
+
+
+class MemoryRequest(BaseModel):
+    content: str
+    enabled: Optional[bool] = True
+    scope: Optional[str] = "global"
 
 
 class SessionPatch(BaseModel):
@@ -551,9 +669,26 @@ def set_session_remote_state(session_id: str, remote_session_id: str, remote_rea
         )
 
 
+def prune_session_compact_backups(session_id: str, keep_latest: int = 3, max_age_seconds: int = 7 * 24 * 60 * 60) -> None:
+    backups = sorted(
+        HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True,
+    )
+    cutoff = time.time() - max_age_seconds
+    for idx, backup in enumerate(backups):
+        try:
+            if idx >= keep_latest or backup.stat().st_mtime < cutoff:
+                backup.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
+    if session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is compacting")
     existing_events = load_events(session_id) if req.session_id else []
     with db_connect() as conn:
         row = conn.execute(
@@ -618,11 +753,15 @@ async def chat(req: ChatRequest):
         # (macOS ~256KB, Linux ~128KB total argv). Images already force stdin.
         message_too_large = len(full_message.encode("utf-8")) > ARGV_STDIN_THRESHOLD
         use_stdin = has_images or message_too_large
+        effective_system_prompt = compose_system_prompt(
+            load_enabled_memories(work_dir, session_id),
+            req.system_prompt,
+        )
         args = build_args(
             full_message, remote_session_id,
             resume=not is_new,
             model=req.model,
-            system_prompt=req.system_prompt,
+            system_prompt=effective_system_prompt,
             permission_mode=req.permission_mode,
             allowed_tools=req.allowed_tools,
             disallowed_tools=req.disallowed_tools,
@@ -686,6 +825,8 @@ async def chat(req: ChatRequest):
                     remote_became_ready = True
                 if t != "stream_event" and not (t == "system" and obj.get("subtype", "").startswith("hook_")):
                     append_event(session_id, obj)
+                    if t == "result":
+                        record_usage(session_id, obj)
                 yield f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
             rc = await process.wait()
@@ -737,12 +878,15 @@ async def stop_chat(session_id: str):
 
 @app.post("/api/sessions/{session_id}/prepare-fork")
 async def prepare_fork(session_id: str, req: ForkRequest):
+    if session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is compacting")
     events = load_events(session_id)
     user_event_positions = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
-    if req.event_index < 0 or req.event_index >= len(user_event_positions):
+    if not user_event_positions or req.event_index < 0:
         raise HTTPException(status_code=400, detail="invalid event_index")
+    event_index = min(req.event_index, len(user_event_positions) - 1)
 
-    target_pos = user_event_positions[req.event_index]
+    target_pos = user_event_positions[event_index]
     events_before = events[:target_pos]
     original_text = events[target_pos].get("text", "")
     new_text = req.new_text if req.new_text is not None and req.new_text.strip() else original_text
@@ -1342,6 +1486,35 @@ async def list_sessions(q: Optional[str] = None, archived: bool = False, tag: Op
     return items
 
 
+@app.get("/api/sessions/search")
+async def search_sessions(q: str = Query(default=""), limit: int = Query(default=10, ge=1, le=30)):
+    q_like = f"%{q.strip()}%"
+    with db_connect() as conn:
+        if q.strip():
+            rows = conn.execute(
+                """
+                SELECT id, title, cwd, updated_at
+                FROM sessions
+                WHERE archived = 0 AND (title LIKE ? OR cwd LIKE ? OR id LIKE ?)
+                ORDER BY pinned DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (q_like, q_like, q_like, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT id, title, cwd, updated_at
+                FROM sessions
+                WHERE archived = 0
+                ORDER BY pinned DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     with db_connect() as conn:
@@ -1353,6 +1526,10 @@ async def get_session(session_id: str):
         raise HTTPException(status_code=404, detail="session not found")
     data = _row_to_session(row)
     data["events"] = load_events(session_id)
+    data["compact_backups"] = [
+        {"name": p.name, "created_at": p.stat().st_mtime, "size": p.stat().st_size}
+        for p in sorted(HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)
+    ]
     return data
 
 
@@ -1382,12 +1559,96 @@ async def patch_session(session_id: str, req: SessionPatch):
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
+    if session_id in _running_processes or session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is busy")
     with db_connect() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM memories WHERE scope = ?", (f"session:{session_id}",))
     path = HISTORY_DIR / f"{session_id}.jsonl"
     if path.exists():
         path.unlink()
+    for backup in HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"):
+        backup.unlink(missing_ok=True)
     return {"ok": True}
+
+
+@app.post("/api/sessions/{session_id}/clear")
+async def clear_session(session_id: str):
+    if session_id in _running_processes or session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is busy")
+    save_events(session_id, [])
+    with db_connect() as conn:
+        conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
+        conn.execute("UPDATE sessions SET title = '新会话', manual_title = 0, updated_at = ? WHERE id = ?", (time.time(), session_id))
+    set_session_remote_state(session_id, "", False)
+    return {"ok": True}
+
+
+@app.post("/api/sessions/{session_id}/compact")
+async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=1, le=10)):
+    if session_id in _running_processes or session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is busy")
+    _compacting_sessions.add(session_id)
+    try:
+        events = load_events(session_id)
+        if len(events) < 4:
+            return {"ok": True, "skipped": True, "reason": "history too short"}
+
+        user_indices = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
+        if len(user_indices) <= keep_last:
+            return {"ok": True, "skipped": True, "reason": "history too short"}
+
+        split_at = user_indices[-keep_last]
+        old_events, new_events = events[:split_at], events[split_at:]
+        snippet = format_context_snippet(old_events, max_chars=12000)
+        summary_prompt = (
+            "请把以下对话历史压缩成一份延续工作所需的精简摘要，"
+            "覆盖：目标、关键决策、已修改文件、未完成工作、风险与约定。"
+            "用 markdown 列表，不超过 30 行。\n\n"
+            + snippet
+        )
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", summary_prompt, "--output-format", "text", "--model", "haiku",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(status_code=504, detail="summary timeout")
+
+        summary = stdout.decode("utf-8", errors="replace").strip()
+        if not summary:
+            raise HTTPException(status_code=500, detail="empty summary")
+
+        src = HISTORY_DIR / f"{session_id}.jsonl"
+        backup_name = ""
+        if src.exists():
+            backup = HISTORY_DIR / f"{session_id}.before-compact-{int(time.time())}.jsonl"
+            backup.write_bytes(src.read_bytes())
+            backup_name = backup.name
+            prune_session_compact_backups(session_id)
+
+        compacted = [
+            {
+                "type": "user_input",
+                "text": f"【会话已压缩 · 以下为之前对话的摘要】\n\n{summary}",
+                "ts": time.time(),
+                "compacted": True,
+            }
+        ] + new_events
+        save_events(session_id, compacted)
+        with db_connect() as conn:
+            conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
+        set_session_remote_state(session_id, "", False)
+        return {"ok": True, "kept_turns": keep_last, "backup": backup_name}
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="claude CLI not found in PATH")
+    finally:
+        _compacting_sessions.discard(session_id)
 
 
 @app.post("/api/sessions/{session_id}/suggest-title")
@@ -1464,16 +1725,211 @@ async def export_session(session_id: str):
     )
 
 
+@app.get("/api/sessions/{session_id}/usage")
+async def get_session_usage(session_id: str, limit: int = Query(default=20, ge=1, le=100)):
+    with db_connect() as conn:
+        total = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_input_tokens,
+                COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_input_tokens,
+                COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd
+            FROM session_usage
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        rows = conn.execute(
+            """
+            SELECT turn_idx, input_tokens, output_tokens, cache_read_input_tokens,
+                   cache_creation_input_tokens, total_cost_usd, ts
+            FROM session_usage
+            WHERE session_id = ?
+            ORDER BY turn_idx DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        ).fetchall()
+    return {
+        "session_id": session_id,
+        "total": dict(total) if total else {},
+        "recent": [dict(r) for r in rows],
+    }
+
+
+@app.get("/api/sessions/{session_id}/mention")
+async def mention_session(session_id: str, max_chars: int = Query(default=5000, ge=500, le=12000)):
+    events = load_events(session_id)
+    if not events:
+        raise HTTPException(status_code=404, detail="session not found")
+    text = summarize_text_from_events(events)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > max_chars:
+        head = text[: max_chars // 2].rstrip()
+        tail = text[-(max_chars // 2) :].lstrip()
+        text = head + "\n\n...[session content truncated]...\n\n" + tail
+    with db_connect() as conn:
+        row = conn.execute("SELECT title FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    title = row["title"] if row and row["title"] else session_id[:8]
+    return {"id": session_id, "title": title, "content": f"Referenced session: {title}\n\n{text}"}
+
+
+@app.post("/api/projects/scan")
+async def scan_project(cwd: str = Query(...)):
+    project_dir = Path(os.path.expanduser(cwd)).resolve()
+    if not project_dir.is_dir():
+        raise HTTPException(status_code=400, detail="cwd not found")
+
+    probes = [
+        "README.md", "README", "package.json", "pyproject.toml", "Cargo.toml",
+        "go.mod", "tsconfig.json", "Makefile", ".gitignore",
+    ]
+    snippets: List[str] = []
+    for name in probes:
+        p = project_dir / name
+        try:
+            if p.is_file() and p.stat().st_size < 32_000:
+                snippets.append(f"--- {name} ---\n" + p.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+
+    scan_ignored_dirs = IGNORED_DIRS | {"history", "uploads", "dist", "build", ".pycache_check"}
+    try:
+        tree_lines: List[str] = []
+        for entry in sorted(project_dir.iterdir(), key=lambda x: x.name)[:50]:
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                if entry.name in scan_ignored_dirs:
+                    continue
+                tree_lines.append(f"DIR {entry.name}/")
+                try:
+                    for sub in sorted(entry.iterdir(), key=lambda x: x.name)[:20]:
+                        if not sub.name.startswith("."):
+                            tree_lines.append(f"   {sub.name}{'/' if sub.is_dir() else ''}")
+                except OSError:
+                    pass
+            else:
+                tree_lines.append(f"FILE {entry.name}")
+        snippets.append("--- directory ---\n" + "\n".join(tree_lines))
+    except OSError:
+        pass
+
+    return {"cwd": str(project_dir), "context": "\n\n".join(snippets)[:20_000]}
+
+
+@app.get("/api/memories")
+async def list_memories(scope: Optional[str] = None, q: str = Query(default="")):
+    clauses = []
+    params: List[object] = []
+    if scope:
+        clauses.append("scope = ?")
+        params.append(scope)
+    if q.strip():
+        clauses.append("content LIKE ?")
+        params.append(f"%{q.strip()}%")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with db_connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, content, enabled, scope, created_at, updated_at
+            FROM memories
+            {where}
+            ORDER BY updated_at DESC
+            LIMIT 100
+            """,
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/memories/active")
+async def active_memories(cwd: str = Query(default=""), session_id: str = Query(default="")):
+    return load_enabled_memories(cwd, session_id)
+
+
+@app.post("/api/memories")
+async def create_memory(req: MemoryRequest):
+    mid = uuid.uuid4().hex
+    now = time.time()
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    scope = normalize_memory_scope(req.scope)
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO memories (id, content, enabled, scope, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (mid, content, 1 if req.enabled else 0, scope, now, now),
+        )
+    return {"id": mid}
+
+
+@app.put("/api/memories/{memory_id}")
+async def update_memory(memory_id: str, req: MemoryRequest):
+    content = req.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content required")
+    scope = normalize_memory_scope(req.scope)
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE memories SET content = ?, enabled = ?, scope = ?, updated_at = ? WHERE id = ?",
+            (content, 1 if req.enabled else 0, scope, time.time(), memory_id),
+        )
+    return {"ok": True}
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_memory(memory_id: str):
+    with db_connect() as conn:
+        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+    return {"ok": True}
+
+
+@app.get("/api/memories/search")
+async def search_memories(q: str = Query(default=""), limit: int = Query(default=10, ge=1, le=30)):
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, content, enabled, scope, updated_at
+            FROM memories
+            WHERE content LIKE ?
+            ORDER BY enabled DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (f"%{q.strip()}%", limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 @app.get("/api/prompts")
 async def list_prompts():
     with db_connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, content, created_at FROM prompts ORDER BY created_at DESC"
+            "SELECT id, name, content, slash_trigger, created_at FROM prompts ORDER BY created_at DESC"
         ).fetchall()
     return [
-        {"id": r["id"], "name": r["name"], "content": r["content"], "created_at": r["created_at"]}
+        {"id": r["id"], "name": r["name"], "content": r["content"], "slash_trigger": r["slash_trigger"], "created_at": r["created_at"]}
         for r in rows
     ]
+
+
+@app.get("/api/prompts/search")
+async def search_prompts(q: str = Query(default=""), limit: int = Query(default=10, ge=1, le=30)):
+    q_like = f"%{q.strip()}%"
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, name, content, slash_trigger, created_at
+            FROM prompts
+            WHERE name LIKE ? OR content LIKE ? OR slash_trigger LIKE ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (q_like, q_like, q_like, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/prompts")
@@ -1481,8 +1937,8 @@ async def create_prompt(req: PromptRequest):
     pid = uuid.uuid4().hex
     with db_connect() as conn:
         conn.execute(
-            "INSERT INTO prompts (id, name, content, created_at) VALUES (?, ?, ?, ?)",
-            (pid, req.name, req.content, time.time()),
+            "INSERT INTO prompts (id, name, content, slash_trigger, created_at) VALUES (?, ?, ?, ?, ?)",
+            (pid, req.name, req.content, (req.slash_trigger or "").strip().lstrip("/"), time.time()),
         )
     return {"id": pid}
 
@@ -1491,8 +1947,8 @@ async def create_prompt(req: PromptRequest):
 async def update_prompt(prompt_id: str, req: PromptRequest):
     with db_connect() as conn:
         conn.execute(
-            "UPDATE prompts SET name = ?, content = ? WHERE id = ?",
-            (req.name, req.content, prompt_id),
+            "UPDATE prompts SET name = ?, content = ?, slash_trigger = ? WHERE id = ?",
+            (req.name, req.content, (req.slash_trigger or "").strip().lstrip("/"), prompt_id),
         )
     return {"ok": True}
 

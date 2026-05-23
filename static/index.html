@@ -121,6 +121,28 @@
     font-size: 15px;
     max-width: 100%;
   }
+  .bubble-user.compacted-summary {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e3a8a;
+    padding: 0;
+    overflow: hidden;
+  }
+  .dark .bubble-user.compacted-summary {
+    background: rgba(30, 58, 138, 0.28);
+    border-color: rgba(96, 165, 250, 0.35);
+    color: #bfdbfe;
+  }
+  .compacted-summary summary {
+    padding: 9px 12px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .compacted-summary-body {
+    padding: 0 12px 12px;
+    font-size: 13px;
+    white-space: pre-wrap;
+  }
   .user-doc-badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 10px; border-radius: 12px;
@@ -429,12 +451,45 @@
   /* ===== File picker ===== */
   .file-picker {
     position: absolute; bottom: 100%; left: 0; right: 0;
-    margin-bottom: 8px; max-height: 240px; overflow-y: auto;
+    margin-bottom: 8px; max-height: 320px; overflow-y: auto;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 10px; box-shadow: var(--shadow-lg); z-index: 40;
   }
   .file-picker .item { padding: 7px 12px; cursor: pointer; font-size: 13px; color: var(--text); }
   .file-picker .item:hover, .file-picker .item.sel { background: var(--accent-soft); color: var(--accent-hover); }
+  .file-picker .item.disabled { cursor: not-allowed; opacity: .45; }
+  .file-picker .item.disabled:hover { background: transparent; color: var(--text); }
+  .picker-section-title {
+    padding: 7px 12px 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-subtle);
+    border-top: 1px solid var(--border);
+  }
+  .picker-section-title:first-child { border-top: 0; }
+  .slash-command-row {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: baseline;
+    gap: 10px;
+  }
+  .slash-command-trigger {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--accent);
+  }
+  .slash-command-desc { font-size: 10px; color: var(--text-subtle); margin-top: 1px; }
+  .app-toast {
+    position: fixed; right: 24px; bottom: 24px; z-index: 80;
+    max-width: calc(100vw - 48px);
+    padding: 10px 13px;
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-lg);
+    font-size: 13px;
+  }
 
   /* ===== Lightbox ===== */
   .lightbox {
@@ -785,8 +840,11 @@
         <span id="titleLabel" class="font-medium truncate" style="letter-spacing:-0.01em; font-size:14.5px;">新会话</span>
         <button id="suggestTitleBtn" class="text-sm hidden opacity-60 hover:opacity-100" style="color:var(--accent);" title="让 Claude 自动命名">🪄</button>
         <span class="text-[11px] truncate flex items-center gap-2" id="sessionLabel" style="color:var(--text-subtle);">
+          <span id="sessionLabelText"></span>
           <span id="sessionIdText" class="hidden"></span>
           <span id="gitBar" class="hidden" style="color:#10b981;"></span>
+          <span id="memoryBar" class="hidden cursor-help" style="color:var(--text-subtle);"></span>
+          <span id="tokenBar" class="hidden cursor-help" style="color:var(--text-subtle);"></span>
         </span>
       </div>
     </div>
@@ -956,6 +1014,23 @@
         <label class="block font-medium mb-1">URL 上下文</label>
         <label class="inline-flex items-center gap-2"><input type="checkbox" id="urlAutoFetch" /> 自动识别 URL，发送时抓取网页内容作为上下文</label>
       </div>
+      <div class="border-t border-gray-200 dark:border-slate-700 pt-4">
+        <div class="flex items-center justify-between mb-2">
+          <label class="block font-medium">记忆</label>
+          <span id="activeMemoryCount" class="text-xs text-gray-500">0 条生效</span>
+        </div>
+        <div id="memoriesEditor" class="space-y-2 max-h-48 overflow-y-auto scrollbar-thin mb-2"></div>
+        <textarea id="newMemoryContent" rows="2" placeholder="例如：这个项目使用 pnpm 和 vitest"
+          class="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 dark:bg-slate-700 rounded text-sm"></textarea>
+        <div class="flex gap-2 mt-2">
+          <select id="newMemoryScope" class="px-2 py-1.5 border border-gray-300 dark:border-slate-600 dark:bg-slate-700 rounded text-sm">
+            <option value="global">全局</option>
+            <option value="project">当前项目</option>
+            <option value="session">当前会话</option>
+          </select>
+          <button id="addMemoryBtn" type="button" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm">保存记忆</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -971,6 +1046,7 @@
       <div id="promptsEditor" class="space-y-2 max-h-80 overflow-y-auto scrollbar-thin"></div>
       <div class="border-t border-gray-200 dark:border-slate-700 pt-3 space-y-2">
         <input id="newPromptName" placeholder="模板名称" class="w-full px-3 py-1.5 border border-gray-300 dark:border-slate-600 dark:bg-slate-700 rounded text-sm" />
+        <input id="newPromptSlash" placeholder="斜杠命令（可选，如 test，不含 /）" class="w-full px-3 py-1.5 border border-gray-300 dark:border-slate-600 dark:bg-slate-700 rounded text-sm" />
         <textarea id="newPromptContent" rows="3" placeholder="模板内容"
           class="w-full px-3 py-2 border border-gray-300 dark:border-slate-600 dark:bg-slate-700 rounded text-sm"></textarea>
         <button id="addPromptBtn" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm">添加模板</button>
@@ -1258,16 +1334,20 @@ const systemPromptInput = $('systemPromptInput');
 const toolUseOpenEl = $('toolUseOpen'), toolResultOpenEl = $('toolResultOpen');
 const notifyEnabledEl = $('notifyEnabled'), soundEnabledEl = $('soundEnabled');
 const urlAutoFetchEl = $('urlAutoFetch');
+const memoriesEditor = $('memoriesEditor'), newMemoryContent = $('newMemoryContent'), newMemoryScope = $('newMemoryScope'), addMemoryBtn = $('addMemoryBtn'), activeMemoryCount = $('activeMemoryCount');
 const promptsModal = $('promptsModal'), managePromptsBtn = $('managePrompts');
 const promptList = $('promptList'), promptsEditor = $('promptsEditor');
-const addPromptBtn = $('addPromptBtn'), newPromptName = $('newPromptName'), newPromptContent = $('newPromptContent');
+const addPromptBtn = $('addPromptBtn'), newPromptName = $('newPromptName'), newPromptSlash = $('newPromptSlash'), newPromptContent = $('newPromptContent');
 const statsBar = $('statsBar'), statsModal = $('statsModal');
+const memoryBar = $('memoryBar');
+const tokenBar = $('tokenBar');
 const tokenCounter = $('tokenCounter');
 const filePicker = $('filePicker');
 const viewActiveBtn = $('viewActive'), viewArchivedBtn = $('viewArchived');
 const tagFilter = $('tagFilter');
 const lightbox = $('lightbox');
 const gitBar = $('gitBar');
+const sessionLabelText = $('sessionLabelText');
 const suggestTitleBtn = $('suggestTitleBtn');
 const toggleSidebar = $('toggleSidebar'), sidebar = $('sidebar');
 
@@ -1567,6 +1647,7 @@ function addUserMessage(text, images, opts) {
   opts = opts || {};
   const userIdx = opts.userIndex !== undefined ? opts.userIndex : currentUserIndex++;
   const hasCheckpoint = !!opts.hasCheckpoint;
+  const compacted = !!opts.compacted;
   const docs = Array.isArray(opts.docs) ? opts.docs : [];
   const fullText = typeof opts.fullText === 'string' ? opts.fullText : '';
   lastUserIndex = userIdx;
@@ -1580,11 +1661,17 @@ function addUserMessage(text, images, opts) {
       ${images.map(p => `<img src="/uploads/${encodeURIComponent(pathBasename(p))}" class="max-w-[180px] max-h-[180px] rounded-lg cursor-zoom-in" style="border:1px solid var(--border);" data-lightbox />`).join('')}
     </div>` : '';
   const docsHtml = renderUserDocBadges(docs);
+  const textHtml = compacted
+    ? `<details class="bubble-user user-msg-text compacted-summary" open>
+        <summary>📚 已压缩的对话摘要</summary>
+        <div class="compacted-summary-body">${escapeHtml(text)}</div>
+      </details>`
+    : `<div class="bubble-user user-msg-text">${escapeHtml(text)}</div>`;
   el.innerHTML = `
     <div class="max-w-[75%] group relative user-msg-bubble" data-user-index="${userIdx}">
       ${docsHtml}
       ${imagesHtml}
-      <div class="bubble-user user-msg-text">${escapeHtml(text)}</div>
+      ${textHtml}
       <div class="user-msg-actions absolute -left-24 top-2 opacity-0 group-hover:opacity-100 flex flex-col gap-1 text-xs" style="color:var(--text-subtle);">
         <button data-copy="${encodeURIComponent(text)}" title="复制" class="hover:text-gray-700 dark:hover:text-gray-200">📋</button>
         <button data-edit="${userIdx}" title="编辑并留在当前对话" class="hover:text-blue-500">✏️</button>
@@ -1894,6 +1981,71 @@ function addSystemInfo(text) {
   el.className = 'text-center text-xs text-gray-400 py-1';
   el.textContent = text;
   chatInner.appendChild(el);
+}
+
+// ===== token usage =====
+// Cumulative usage for the *currently open* session. Reset on session switch /
+// new session / load. Updated on every result event (live + history replay).
+let sessionTokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+
+function _fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + 'k';
+  return String(n);
+}
+
+// Compact per-turn string. Returns '' when usage missing so we don't pollute the
+// completion line on legacy events.
+function formatTurnUsage(usage) {
+  if (!usage || typeof usage !== 'object') return '';
+  const input = Number(usage.input_tokens || 0);
+  const output = Number(usage.output_tokens || 0);
+  const cacheRead = Number(usage.cache_read_input_tokens || 0);
+  const cacheCreate = Number(usage.cache_creation_input_tokens || 0);
+  const totalIn = input + cacheRead + cacheCreate;
+  if (totalIn === 0 && output === 0) return '';
+  const parts = [`↑${_fmtTokens(totalIn)}`, `↓${_fmtTokens(output)}`];
+  if (cacheRead > 0 && totalIn > 0) {
+    const hit = Math.round((cacheRead / totalIn) * 100);
+    parts.push(`缓存命中 ${hit}%`);
+  }
+  return parts.join(' · ');
+}
+
+function resetSessionTokens() {
+  sessionTokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
+  renderSessionTokens();
+}
+
+function accumulateSessionTokens(usage) {
+  if (!usage || typeof usage !== 'object') return;
+  sessionTokens.input += Number(usage.input_tokens || 0);
+  sessionTokens.output += Number(usage.output_tokens || 0);
+  sessionTokens.cacheRead += Number(usage.cache_read_input_tokens || 0);
+  sessionTokens.cacheCreate += Number(usage.cache_creation_input_tokens || 0);
+  renderSessionTokens();
+}
+
+function renderSessionTokens() {
+  const totalIn = sessionTokens.input + sessionTokens.cacheRead + sessionTokens.cacheCreate;
+  if (totalIn === 0 && sessionTokens.output === 0) {
+    tokenBar.classList.add('hidden');
+    return;
+  }
+  tokenBar.classList.remove('hidden');
+  const hit = totalIn > 0 ? Math.round((sessionTokens.cacheRead / totalIn) * 100) : 0;
+  const sumAll = totalIn + sessionTokens.output;
+  tokenBar.textContent = `🎫 ${_fmtTokens(totalIn)} 输入 · ${_fmtTokens(sessionTokens.output)} 输出 · 缓存 ${hit}%`;
+  // Color cue: warn when total > 100k (cost grows linearly with --resume replay)
+  tokenBar.style.color = totalIn > 100_000 ? '#f59e0b' : 'var(--text-subtle)';
+  tokenBar.title = [
+    `本会话 token 累计`,
+    `输入 ${_fmtTokens(totalIn)} (含缓存读 ${_fmtTokens(sessionTokens.cacheRead)})`,
+    `输出 ${_fmtTokens(sessionTokens.output)}`,
+    `缓存命中率 ${hit}%`,
+    totalIn > 100_000 ? '上下文较大，每轮重放成本上升，可考虑 /compact 或新建会话' : '',
+  ].filter(Boolean).join('\n');
 }
 function addErrorBlock(message) {
   const el = document.createElement('div');
@@ -2470,7 +2622,7 @@ function handleEvent(obj, container, options = {}) {
   const replay = !!options.replay;
   if (obj.type === 'meta') {
     sessionId = obj.session_id;
-    sessionLabel.textContent = '会话 ' + sessionId.slice(0, 8);
+    sessionLabelText.textContent = '会话 ' + sessionId.slice(0, 8);
     suggestTitleBtn.classList.remove('hidden');
     if (obj.has_checkpoint && lastUserIndex >= 0) {
       markLastUserMessageCheckpoint(lastUserIndex);
@@ -2494,7 +2646,7 @@ function handleEvent(obj, container, options = {}) {
   if (obj.type === 'stream_event' && obj.event) {
     return handleStreamEvent(obj.event, container);
   }
-  if (obj.type === 'user_input') { addUserMessage(obj.text || '', obj.images || [], { docs: obj.docs || [], fullText: obj.full_text || '' }); return null; }
+  if (obj.type === 'user_input') { addUserMessage(obj.text || '', obj.images || [], { docs: obj.docs || [], fullText: obj.full_text || '', compacted: !!obj.compacted }); return null; }
   if (obj.type === 'assistant' && obj.message) {
     const msgId = obj.message.id;
     const wasStreamed = msgId && streamedIds.has(msgId);
@@ -2526,7 +2678,10 @@ function handleEvent(obj, container, options = {}) {
   if (obj.type === 'result') {
     const cost = obj.total_cost_usd !== undefined ? ` · $${obj.total_cost_usd.toFixed(4)}` : '';
     const dur = obj.duration_ms !== undefined ? ` · ${(obj.duration_ms/1000).toFixed(1)}s` : '';
-    addSystemInfo(`完成${dur}${cost}`);
+    const tokens = formatTurnUsage(obj.usage);
+    const tokensSuffix = tokens ? ` · ${tokens}` : '';
+    addSystemInfo(`完成${dur}${cost}${tokensSuffix}`);
+    accumulateSessionTokens(obj.usage);
     refreshStats();
     const denials = obj.permission_denials;
     if (Array.isArray(denials) && denials.length > 0) {
@@ -2816,7 +2971,7 @@ async function forkAndChat(fromSession, userIdx, newText) {
     sessionId = data.session_id;
     cwdInput.value = data.cwd || '';
     titleLabel.textContent = (data.display_message || '分叉会话').slice(0, 40);
-    sessionLabel.textContent = '会话 ' + sessionId.slice(0, 8) + ' · 分叉自 ' + fromSession.slice(0, 6);
+    sessionLabelText.textContent = '会话 ' + sessionId.slice(0, 8) + ' · 分叉自 ' + fromSession.slice(0, 6);
     suggestTitleBtn.classList.remove('hidden');
     // Send with display_message override
     await sendRaw(data.sent_message, data.display_message);
@@ -3014,34 +3169,251 @@ function saveDraft() { localStorage.setItem(draftKey(), input.value); }
 function restoreDraft() { input.value = localStorage.getItem(draftKey()) || ''; updateTokenCount(); }
 function clearDraft() { localStorage.removeItem(draftKey()); }
 
-// ===== @ file picker =====
-let pickerFiles = [];
+// ===== @ mention / slash picker =====
+let pickerItems = [];
 let pickerSel = 0;
 let pickerQuery = '';
+let pickerMode = null;
+let promptsCache = [];
+let pendingSlashFork = null;
+let activeSlashAction = false;
+
+const builtinSlashCommands = [
+  { group: '🔧 操作', kind: 'action', trigger: 'new', name: '新建会话', desc: '开一个空会话', handler: slashNew },
+  { group: '🔧 操作', kind: 'action', trigger: 'clear', name: '清空当前会话', desc: '保留 ID，删除所有历史', handler: slashClear, needSession: true },
+  { group: '🔧 操作', kind: 'action', trigger: 'fork', name: '从当前位置分叉', desc: '基于最后一轮分叉到新会话', handler: slashFork, needSession: true, needHistory: true },
+  { group: '💎 重操作', kind: 'heavy', trigger: 'compact', name: '压缩会话历史', desc: '用 haiku 摘要并重写历史，省 token', handler: slashCompact, needSession: true, needHistory: true },
+  { group: '💎 重操作', kind: 'heavy', trigger: 'init', name: '初始化 CLAUDE.md', desc: '扫项目并生成草稿到输入框', handler: slashInit },
+  { group: '📝 模板', kind: 'template', trigger: 'recap', name: '总结当前进度', content: '请简要总结当前会话的目标、已完成、待办和风险，不超过 10 行。' },
+  { group: '📝 模板', kind: 'template', trigger: 'test', name: '写测试', content: '请为下面的代码补充测试，覆盖正常路径、边界条件和错误路径：\n\n' },
+  { group: '📝 模板', kind: 'template', trigger: 'explain', name: '解释代码', content: '请解释下面的代码：核心意图、关键流程、依赖关系和潜在风险。\n\n' },
+  { group: '📝 模板', kind: 'template', trigger: 'review', name: '代码审查', content: '请做一次严格代码审查，优先指出 bug、回归风险、安全问题和缺失测试：\n\n' },
+  { group: '📝 模板', kind: 'template', trigger: 'refactor', name: '重构', content: '请重构下面的代码，保持行为不变，并说明改动理由：\n\n' },
+  { group: '📝 模板', kind: 'template', trigger: 'commit', name: '生成 commit message', content: '请根据当前改动生成一份清晰的 commit message，并列出主要变更点。' },
+  { group: '📝 模板', kind: 'template', trigger: 'docs', name: '写文档', content: '请为下面的代码生成清晰的文档（用途、参数、返回值、示例）：\n\n' },
+];
+
+function toast(message, opts = {}) {
+  if (toast.el) toast.el.remove();
+  const el = document.createElement('div');
+  el.className = 'app-toast';
+  el.textContent = message;
+  document.body.appendChild(el);
+  toast.el = el;
+  if (!opts.sticky) {
+    setTimeout(() => {
+      if (toast.el === el) toast.el = null;
+      el.remove();
+    }, opts.timeout || 2400);
+  }
+  return el;
+}
+toast.dismiss = function() {
+  if (toast.el) {
+    toast.el.remove();
+    toast.el = null;
+  }
+};
+
+function slashDisabledReason(cmd) {
+  if (cmd.needSession && !sessionId) return '需要先打开或开始一个会话';
+  if (cmd.needHistory && currentUserIndex <= 0) return '当前会话还没有可操作的历史';
+  if ((cmd.kind === 'action' || cmd.kind === 'heavy') && activeSlashAction) return '已有命令正在执行';
+  return '';
+}
+
+async function slashNew() {
+  if (input.value.trim() && !confirm('当前输入会丢失，确定新建会话？')) return;
+  pendingSlashFork = null;
+  startNewSession();
+}
+
+async function slashClear() {
+  if (!sessionId) return;
+  if (!confirm('确定清空当前会话的所有历史？此操作不可撤销。')) return;
+  const r = await fetch(`/api/sessions/${sessionId}/clear`, { method: 'POST' });
+  if (!r.ok) { toast('清空失败'); return; }
+  chatInner.innerHTML = '';
+  chatInner.appendChild(welcome);
+  currentUserIndex = 0;
+  lastUserIndex = -1;
+  streamedIds.clear();
+  lastStreamingMsgId = null;
+  resetSessionTokens();
+  resetToolUseRuntimeState();
+  hideTodoPanel();
+  clearArtifacts();
+  pendingSlashFork = null;
+  titleLabel.textContent = '新会话';
+  await loadSession(sessionId);
+  refreshSessions();
+  toast('会话已清空');
+}
+
+async function slashFork() {
+  if (!sessionId || lastUserIndex < 0) return;
+  const fromSession = sessionId;
+  const r = await fetch(`/api/sessions/${fromSession}/prepare-fork`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ event_index: lastUserIndex }),
+  });
+  if (!r.ok) { toast('分叉失败：' + r.status); return; }
+  const data = await r.json();
+  startNewSession();
+  sessionId = data.session_id;
+  cwdInput.value = data.cwd || '';
+  titleLabel.textContent = (data.display_message || '分叉会话').slice(0, 40);
+  sessionLabelText.textContent = '会话 ' + sessionId.slice(0, 8) + ' · 分叉自 ' + fromSession.slice(0, 6);
+  suggestTitleBtn.classList.remove('hidden');
+  input.value = data.display_message || '';
+  pendingSlashFork = { sent: data.sent_message || input.value, display: input.value };
+  autosizeTextarea();
+  updateTokenCount();
+  saveDraft();
+  input.focus();
+  refreshSessions();
+  toast('已分叉，审过后发送');
+}
+
+async function slashCompact() {
+  if (!sessionId) return;
+  if (!confirm('压缩会话会重写历史，仅保留最近 2 轮原文 + 之前的 AI 摘要。原文件会备份。继续？')) return;
+  toast('正在压缩，请稍候...', { sticky: true });
+  sendBtn.disabled = true;
+  try {
+    const r = await fetch(`/api/sessions/${sessionId}/compact?keep_last=2`, { method: 'POST' });
+    toast.dismiss();
+    if (!r.ok) { toast('压缩失败：' + r.status); return; }
+    const data = await r.json();
+    if (data.skipped) { toast('历史太短，无需压缩'); return; }
+    await loadSession(sessionId);
+    toast('压缩完成，已备份原历史');
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+async function slashInit() {
+  const cwd = cwdInput.value.trim();
+  if (!cwd) { toast('请先设置 cwd'); return; }
+  toast('正在扫描项目...', { sticky: true });
+  const r = await fetch(`/api/projects/scan?cwd=${encodeURIComponent(cwd)}`, { method: 'POST' });
+  toast.dismiss();
+  if (!r.ok) { toast('扫描失败'); return; }
+  const data = await r.json();
+  if (data.cwd) cwdInput.value = data.cwd;
+  input.value = '请基于以下项目信息生成 CLAUDE.md 草稿，包含：\n'
+    + '- 文件名明确为 CLAUDE.md\n'
+    + '- 项目概述、技术栈、目录结构\n'
+    + '- 开发/构建/测试常用命令\n'
+    + '- 注意事项与约定\n\n'
+    + '【项目上下文】\n' + data.context;
+  pendingSlashFork = null;
+  autosizeTextarea();
+  updateTokenCount();
+  saveDraft();
+  input.focus();
+  const size = (data.context || '').length;
+  toast(size > 5000 ? `已填入输入框（约 ${size} 字），建议精简后发送` : '已填入输入框，审过后发送');
+}
+
+function projectScopeValue() {
+  const cwd = cwdInput.value.trim();
+  return cwd ? 'project:' + cwd : 'global';
+}
+
+function selectedMemoryScopeValue() {
+  const val = newMemoryScope.value;
+  if (val === 'project') return projectScopeValue();
+  if (val === 'session') return sessionId ? 'session:' + sessionId : 'global';
+  return 'global';
+}
+
+function hidePicker() {
+  filePicker.classList.add('hidden');
+  pickerMode = null;
+  pickerItems = [];
+  pickerSel = 0;
+  pickerQuery = '';
+}
 
 async function maybeShowPicker() {
   const pos = input.selectionStart;
   const before = input.value.slice(0, pos);
-  const m = before.match(/@([^\s@]*)$/);
-  if (!m) { filePicker.classList.add('hidden'); return; }
-  const q = m[1];
+  const slash = before.match(/^\/(?:([A-Za-z][^\s/]*)?)$/);
+  const mention = before.match(/@([^\s@]*)$/);
+  if (!slash && !mention) { hidePicker(); return; }
+  pickerMode = slash ? 'slash' : 'mention';
+  const q = slash ? (slash[1] || '') : mention[1];
   pickerQuery = q;
-  const cwd = cwdInput.value.trim() || '~';
   try {
-    const r = await fetch(`/api/files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}`);
-    if (!r.ok) { filePicker.classList.add('hidden'); return; }
-    pickerFiles = await r.json();
-    if (pickerFiles.length === 0) { filePicker.classList.add('hidden'); return; }
-    pickerSel = 0;
+    if (pickerMode === 'slash') {
+      const builtInTriggers = new Set(builtinSlashCommands.map(c => c.trigger));
+      const builtins = builtinSlashCommands
+        .filter(c => !q || c.trigger.includes(q) || c.name.toLowerCase().includes(q.toLowerCase()))
+        .map(c => ({ ...c, label: '/' + c.trigger, meta: c.name, disabledReason: slashDisabledReason(c) }));
+      const promptSlash = promptsCache
+        .filter(p => p.slash_trigger && (!q || p.slash_trigger.includes(q) || p.name.toLowerCase().includes(q.toLowerCase())))
+        .map(p => ({
+          group: '👤 我的模板',
+          kind: 'template',
+          custom: true,
+          trigger: p.slash_trigger,
+          label: '/' + p.slash_trigger,
+          meta: p.name,
+          name: p.name,
+          content: p.content,
+          disabledReason: builtInTriggers.has(p.slash_trigger) ? '与内置命令重名，内置优先' : '',
+        }));
+      pickerItems = [...builtins, ...promptSlash].slice(0, 24);
+    } else {
+      const cwd = cwdInput.value.trim() || '~';
+      const [filesResp, sessionsResp, promptsResp, memoriesResp] = await Promise.all([
+        fetch(`/api/files?cwd=${encodeURIComponent(cwd)}&q=${encodeURIComponent(q)}&limit=8`),
+        fetch(`/api/sessions/search?q=${encodeURIComponent(q)}&limit=6`),
+        fetch(`/api/prompts/search?q=${encodeURIComponent(q)}&limit=6`),
+        fetch(`/api/memories/search?q=${encodeURIComponent(q)}&limit=6`),
+      ]);
+      const files = filesResp.ok ? await filesResp.json() : [];
+      const sessions = sessionsResp.ok ? await sessionsResp.json() : [];
+      const prompts = promptsResp.ok ? await promptsResp.json() : [];
+      const memories = memoriesResp.ok ? await memoriesResp.json() : [];
+      pickerItems = [
+        ...files.map(f => ({ kind: 'file', label: f.rel, meta: '文件', value: '@' + f.path })),
+        ...sessions.map(s => ({ kind: 'session', label: s.title || s.id.slice(0, 8), meta: '会话', id: s.id })),
+        ...prompts.map(p => ({ kind: 'prompt', label: p.name, meta: '提示词', content: p.content })),
+        ...memories.map(m => ({ kind: 'memory', label: m.content.slice(0, 60), meta: '记忆 · ' + m.scope, content: m.content })),
+      ].slice(0, 20);
+    }
+    if (pickerItems.length === 0) { hidePicker(); return; }
+    pickerSel = Math.max(0, pickerItems.findIndex(item => !item.disabledReason));
     renderPicker();
     filePicker.classList.remove('hidden');
-  } catch { filePicker.classList.add('hidden'); }
+  } catch { hidePicker(); }
 }
 
 function renderPicker() {
-  filePicker.innerHTML = pickerFiles.map((f, i) => `
-    <div class="item ${i===pickerSel?'sel':''}" data-idx="${i}">${escapeHtml(f.rel)}</div>
-  `).join('');
+  let lastGroup = '';
+  filePicker.innerHTML = pickerItems.map((item, i) => {
+    const section = pickerMode === 'slash' && item.group !== lastGroup
+      ? `<div class="picker-section-title">${escapeHtml(item.group || '')}</div>`
+      : '';
+    lastGroup = item.group || lastGroup;
+    const disabled = item.disabledReason ? 'disabled' : '';
+    const title = item.disabledReason ? ` title="${escapeHtml(item.disabledReason)}"` : '';
+    const body = pickerMode === 'slash'
+      ? `<div class="slash-command-row">
+          <div class="slash-command-trigger">${escapeHtml(item.label)}</div>
+          <div class="min-w-0">
+            <div class="font-medium truncate">${escapeHtml(item.meta || '')}</div>
+            <div class="slash-command-desc truncate">${escapeHtml(item.disabledReason || item.desc || '')}</div>
+          </div>
+        </div>`
+      : `<div class="font-medium truncate">${escapeHtml(item.label)}</div>
+        <div class="text-[10px] opacity-70 truncate">${escapeHtml(item.meta || '')}</div>`;
+    return `${section}<div class="item ${i===pickerSel?'sel':''} ${disabled}" data-idx="${i}"${title}>${body}</div>`;
+  }).join('');
   filePicker.querySelectorAll('.item').forEach(el => {
     el.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -3050,18 +3422,74 @@ function renderPicker() {
   });
 }
 
-function insertPickerSelection(i) {
-  const f = pickerFiles[i];
-  if (!f) return;
+function movePickerSelection(delta) {
+  if (!pickerItems.length) return;
+  let next = pickerSel + delta;
+  while (next >= 0 && next < pickerItems.length && pickerItems[next]?.disabledReason) {
+    next += delta;
+  }
+  if (next < 0 || next >= pickerItems.length) return;
+  pickerSel = next;
+  renderPicker();
+}
+
+function slashForkPayloadFor(text) {
+  if (!pendingSlashFork) return null;
+  const original = pendingSlashFork.display || '';
+  if (text === original) return pendingSlashFork;
+  const sent = pendingSlashFork.sent || '';
+  if (original && sent.endsWith(original)) {
+    return { sent: sent.slice(0, -original.length) + text, display: text };
+  }
+  return { sent: text, display: text };
+}
+
+async function insertPickerSelection(i) {
+  const item = pickerItems[i];
+  if (!item) return;
   const pos = input.selectionStart;
   const before = input.value.slice(0, pos);
   const after = input.value.slice(pos);
-  const newBefore = before.replace(/@([^\s@]*)$/, '@' + f.path);
-  input.value = newBefore + after;
-  const newPos = newBefore.length;
+  let insertText = '';
+  if (pickerMode === 'slash') {
+    if (item.disabledReason) return;
+    input.value = before.replace(/^\/(?:([A-Za-z][^\s/]*)?)$/, () => insertText) + after;
+    hidePicker();
+    if (item.kind === 'action' || item.kind === 'heavy') {
+      pendingSlashFork = null;
+      saveDraft();
+      autosizeTextarea();
+      try {
+        activeSlashAction = true;
+        await item.handler();
+      } finally {
+        activeSlashAction = false;
+      }
+      return;
+    }
+    insertText = item.content || '';
+    input.value = before.replace(/^\/(?:([A-Za-z][^\s/]*)?)$/, () => insertText) + after;
+  } else if (item.kind === 'file') {
+    input.value = before.replace(/@([^\s@]*)$/, () => item.value) + after;
+  } else {
+    if (item.kind === 'session') {
+      try {
+        const r = await fetch(`/api/sessions/${item.id}/mention`);
+        const d = r.ok ? await r.json() : null;
+        insertText = d?.content || '';
+      } catch {}
+    } else {
+      insertText = item.content || '';
+    }
+    input.value = before.replace(/@([^\s@]*)$/, () => insertText) + after;
+  }
+  const newPos = input.value.length - after.length;
   input.selectionStart = input.selectionEnd = newPos;
-  filePicker.classList.add('hidden');
+  hidePicker();
   input.focus();
+  updateTokenCount();
+  saveDraft();
+  autosizeTextarea();
 }
 
 // ===== send / stop =====
@@ -3229,6 +3657,7 @@ stopBtn.addEventListener('click', async () => {
 
 form.addEventListener('submit', (e) => {
   e.preventDefault();
+  hidePicker();
   const text = input.value.trim();
   const readyDocs = pendingDocs.filter(d => d.status === 'ready' && d.content).length;
   const loadingDocs = pendingDocs.filter(d => d.status === 'loading').length;
@@ -3236,17 +3665,25 @@ form.addEventListener('submit', (e) => {
   input.value = '';
   updateTokenCount();
   autosizeTextarea();
-  send(text || (pendingImages.length > 0 ? '（仅图片）' : '（仅文档）'));
+  if (pendingSlashFork && pendingImages.length === 0 && readyDocs === 0 && loadingDocs === 0) {
+    const payload = slashForkPayloadFor(text);
+    pendingSlashFork = null;
+    clearDraft();
+    sendRaw(payload.sent, payload.display);
+  } else {
+    pendingSlashFork = null;
+    send(text || (pendingImages.length > 0 ? '（仅图片）' : '（仅文档）'));
+  }
 });
 
 input.addEventListener('keydown', (e) => {
   // Skip when IME composition is active (e.g. 中文拼音输入法)
   if (e.isComposing || e.keyCode === 229) return;
   if (!filePicker.classList.contains('hidden')) {
-    if (e.key === 'ArrowDown') { e.preventDefault(); pickerSel = Math.min(pickerSel+1, pickerFiles.length-1); renderPicker(); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); pickerSel = Math.max(pickerSel-1, 0); renderPicker(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePickerSelection(1); return; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); movePickerSelection(-1); return; }
     if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertPickerSelection(pickerSel); return; }
-    if (e.key === 'Escape') { filePicker.classList.add('hidden'); return; }
+    if (e.key === 'Escape') { hidePicker(); return; }
   }
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -3269,9 +3706,10 @@ input.addEventListener('input', () => {
 newSessionBtn.addEventListener('click', () => startNewSession());
 
 function startNewSession() {
+  hidePicker();
   sessionId = null;
   titleLabel.textContent = '新会话';
-  sessionLabel.textContent = '尚未开始';
+  sessionLabelText.textContent = '尚未开始';
   suggestTitleBtn.classList.add('hidden');
   chatInner.innerHTML = '';
   chatInner.appendChild(welcome);
@@ -3285,6 +3723,8 @@ function startNewSession() {
   streamedIds.clear();
   lastStreamingMsgId = null;
   resetToolUseRuntimeState();
+  resetSessionTokens();
+  refreshMemories();
   restoreDraft();
   highlightActiveSession();
 }
@@ -3417,12 +3857,13 @@ function highlightActiveSession() {
 
 async function loadSession(id) {
   try {
+    hidePicker();
     const r = await fetch('/api/sessions/' + id);
     if (!r.ok) return;
     const data = await r.json();
     sessionId = data.id;
     titleLabel.textContent = data.title;
-    sessionLabel.textContent = '会话 ' + data.id.slice(0, 8);
+    sessionLabelText.textContent = '会话 ' + data.id.slice(0, 8);
     streamedIds.clear();
     lastStreamingMsgId = null;
     resetToolUseRuntimeState();
@@ -3430,7 +3871,9 @@ async function loadSession(id) {
     clearArtifacts();
     currentUserIndex = 0;
     lastUserIndex = -1;
+    resetSessionTokens();
     if (data.cwd) cwdInput.value = data.cwd;
+    refreshMemories();
     suggestTitleBtn.classList.remove('hidden');
     chatInner.innerHTML = '';
     restoreDraft();
@@ -3439,7 +3882,7 @@ async function loadSession(id) {
     let asstContainer = null;
     for (const ev of data.events) {
       if (ev.type === 'user_input') {
-        addUserMessage(ev.text || '', ev.images || [], { hasCheckpoint: !!ev.checkpoint, docs: ev.docs || [], fullText: ev.full_text || '' });
+        addUserMessage(ev.text || '', ev.images || [], { hasCheckpoint: !!ev.checkpoint, docs: ev.docs || [], fullText: ev.full_text || '', compacted: !!ev.compacted });
         asstContainer = null;
       } else if (ev.type === 'assistant' || ev.type === 'user') {
         const c = handleEvent(ev, asstContainer, { replay: true });
@@ -3448,6 +3891,7 @@ async function loadSession(id) {
         handleEvent(ev, asstContainer, { replay: true });
       }
     }
+    if (!data.events.length) chatInner.appendChild(welcome);
     forceScrollBottom();
     highlightActiveSession();
     if (window.innerWidth <= 768) sidebar.classList.remove('open');
@@ -3555,6 +3999,7 @@ settingsBtn.addEventListener('click', () => {
   notifyEnabledEl.checked = settings.notifyEnabled;
   soundEnabledEl.checked = settings.soundEnabled;
   urlAutoFetchEl.checked = settings.urlAutoFetch;
+  refreshMemories();
   openModal(settingsModal);
 });
 
@@ -3572,6 +4017,92 @@ urlAutoFetchEl.addEventListener('change', () => {
   LS.set('urlAutoFetch', settings.urlAutoFetch);
   if (!settings.urlAutoFetch) clearUrlContext();
   else scheduleUrlDetect();
+});
+
+async function refreshMemories() {
+  try {
+    const [r, activeResp] = await Promise.all([
+      fetch('/api/memories'),
+      fetch(`/api/memories/active?cwd=${encodeURIComponent(cwdInput.value.trim() || '')}&session_id=${encodeURIComponent(sessionId || '')}`),
+    ]);
+    if (!r.ok) return;
+    const list = await r.json();
+    const activeList = activeResp.ok ? await activeResp.json() : [];
+    activeMemoryCount.textContent = `${activeList.length} 条生效`;
+    renderMemoryBar(activeList);
+    if (list.length === 0) {
+      memoriesEditor.innerHTML = '<div class="text-xs text-gray-400 text-center py-2">暂无记忆</div>';
+      return;
+    }
+    memoriesEditor.innerHTML = list.map(m => `
+      <div class="flex gap-2 items-start border border-gray-200 dark:border-slate-700 rounded p-2">
+        <label class="pt-0.5"><input type="checkbox" data-mem-enabled="${m.id}" ${m.enabled ? 'checked' : ''}></label>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs text-gray-500">${escapeHtml(m.scope)}</div>
+          <div class="text-sm whitespace-pre-wrap">${escapeHtml(m.content)}</div>
+        </div>
+        <button data-edit-memory="${m.id}" class="text-xs text-blue-600">编辑</button>
+        <button data-del-memory="${m.id}" class="text-xs text-red-500">删除</button>
+      </div>
+    `).join('');
+    memoriesEditor.querySelectorAll('[data-mem-enabled]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        const item = list.find(m => m.id === cb.dataset.memEnabled);
+        if (!item) return;
+        await fetch('/api/memories/' + item.id, {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ content: item.content, scope: item.scope, enabled: cb.checked }),
+        });
+        refreshMemories();
+      });
+    });
+    memoriesEditor.querySelectorAll('[data-edit-memory]').forEach(b => {
+      b.addEventListener('click', async () => {
+        const item = list.find(m => m.id === b.dataset.editMemory);
+        if (!item) return;
+        const content = prompt('记忆内容', item.content);
+        if (content === null) return;
+        await fetch('/api/memories/' + item.id, {
+          method: 'PUT', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ content, scope: item.scope, enabled: !!item.enabled }),
+        });
+        refreshMemories();
+      });
+    });
+    memoriesEditor.querySelectorAll('[data-del-memory]').forEach(b => {
+      b.addEventListener('click', async () => {
+        if (!confirm('删除此记忆？')) return;
+        await fetch('/api/memories/' + b.dataset.delMemory, { method: 'DELETE' });
+        refreshMemories();
+      });
+    });
+  } catch (e) { console.warn(e); }
+}
+
+function renderMemoryBar(list = []) {
+  if (!memoryBar) return;
+  if (!list.length) {
+    memoryBar.classList.add('hidden');
+    memoryBar.textContent = '';
+    return;
+  }
+  memoryBar.classList.remove('hidden');
+  memoryBar.textContent = `🧠 ${list.length}`;
+  memoryBar.title = list
+    .slice(0, 10)
+    .map(m => `${m.scope}: ${m.content}`)
+    .join('\n');
+}
+
+addMemoryBtn.addEventListener('click', async () => {
+  const content = newMemoryContent.value.trim();
+  if (!content) { alert('记忆内容不能为空'); return; }
+  await fetch('/api/memories', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ content, scope: selectedMemoryScopeValue(), enabled: true }),
+  });
+  newMemoryContent.value = '';
+  refreshMemories();
 });
 
 document.querySelectorAll('[data-theme]').forEach(b => b.addEventListener('click', () => applyTheme(b.dataset.theme)));
@@ -3621,6 +4152,7 @@ async function refreshPrompts() {
     const r = await fetch('/api/prompts');
     if (!r.ok) return;
     const list = await r.json();
+    promptsCache = list;
     if (list.length === 0) {
       promptList.innerHTML = '<div class="text-xs text-gray-400 text-center py-2">无模板</div>';
     } else {
@@ -3638,7 +4170,7 @@ async function refreshPrompts() {
     promptsEditor.innerHTML = list.map(p => `
       <div class="flex gap-2 items-start border border-gray-200 dark:border-slate-700 rounded p-2">
         <div class="flex-1 min-w-0">
-          <div class="font-medium text-sm">${escapeHtml(p.name)}</div>
+          <div class="font-medium text-sm">${escapeHtml(p.name)} ${p.slash_trigger ? `<span class="text-xs text-orange-500">/${escapeHtml(p.slash_trigger)}</span>` : ''}</div>
           <div class="text-xs text-gray-500 dark:text-gray-400 truncate">${escapeHtml(p.content)}</div>
         </div>
         <button data-edit="${p.id}" class="text-xs text-blue-600">编辑</button>
@@ -3658,11 +4190,13 @@ async function refreshPrompts() {
         if (!item) return;
         const newName = prompt('模板名称', item.name);
         if (newName === null) return;
+        const newSlash = prompt('斜杠命令（可选，不含 /）', item.slash_trigger || '');
+        if (newSlash === null) return;
         const newContent = prompt('模板内容', item.content);
         if (newContent === null) return;
         await fetch('/api/prompts/' + item.id, {
           method: 'PUT', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ name: newName, content: newContent }),
+          body: JSON.stringify({ name: newName, content: newContent, slash_trigger: newSlash }),
         });
         refreshPrompts();
       });
@@ -3673,13 +4207,14 @@ async function refreshPrompts() {
 managePromptsBtn.addEventListener('click', () => openModal(promptsModal));
 addPromptBtn.addEventListener('click', async () => {
   const name = newPromptName.value.trim();
+  const slash_trigger = newPromptSlash.value.trim().replace(/^\//, '');
   const content = newPromptContent.value.trim();
   if (!name || !content) { alert('名称和内容都要填'); return; }
   await fetch('/api/prompts', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ name, content }),
+    body: JSON.stringify({ name, content, slash_trigger }),
   });
-  newPromptName.value = ''; newPromptContent.value = '';
+  newPromptName.value = ''; newPromptSlash.value = ''; newPromptContent.value = '';
   refreshPrompts();
 });
 
@@ -4390,6 +4925,7 @@ updateTokenCount();
 refreshSessions();
 refreshPrompts();
 refreshCwds();
+refreshMemories();
 refreshStats();
 refreshTags();
 refreshGitStatus();

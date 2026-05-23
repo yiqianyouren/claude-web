@@ -6,6 +6,8 @@
 
 一个给 [Claude Code](https://docs.claude.com/claude-code) CLI 加可视化界面的 Web 应用。后端用 FastAPI 包装 `claude -p --output-format stream-json`，前端通过 SSE 流式渲染对话、工具调用、思考过程。
 
+[更新日志](CHANGELOG.md) · [API 端点](#-api-端点速查) · [Roadmap](#-roadmap)
+
 ```bash
 pip install claude-web-ui && claude-web
 ```
@@ -46,8 +48,13 @@ pip install claude-web-ui && claude-web
 - **URL 自动检测**：输入框里粘贴链接，发送时自动抓取网页正文
 - **联网搜索开关**：一键激活 WebSearch / WebFetch
 - `@` 引用工作目录下的文件（↑↓ 选择）
+- **Slash 命令菜单**：输入 `/` 弹出操作、重操作、内置模板和个人模板分组，支持 ↑↓ / Tab / Enter / Esc
+- **会话操作命令**：`/new` 新建、`/clear` 清空当前会话、`/fork` 从最后一条用户消息分叉
+- **重操作命令**：`/compact` 用 Haiku 压缩旧历史并备份 JSONL，`/init` 扫描项目生成 `CLAUDE.md` 草稿到输入框
+- **内置模板命令**：`/recap` `/test` `/explain` `/review` `/refactor` `/commit` `/docs`
+- **自定义 Slash 模板**：提示词模板可设置 `slash_trigger`，显示在「我的模板」分组
 - Token 估算 + 草稿自动保存
-- 提示词模板库
+- 提示词模板库（支持普通插入和 Slash 触发）
 
 ### 🎨 渲染
 - Markdown + 代码高亮（highlight.js）
@@ -65,6 +72,7 @@ pip install claude-web-ui && claude-web
 - 双击标题重命名
 - 搜索（标题 + 内容）
 - 导出为 Markdown
+- 会话 token 累计展示，长上下文时提示可用 `/compact` 降低后续成本
 
 ### 🛡 安全 & 回滚
 - **权限策略**：自由 / 允许编辑 / 计划 / 只读 / 自定义工具列表
@@ -270,14 +278,24 @@ claude-web/
 | `/api/exec-code` | POST | 运行代码块（Python/JS/Bash，15s 超时） |
 | `/api/fetch-url` | POST | 抓取 URL 正文（带 SSRF 防护） |
 | `/api/sessions` | GET | 列出所有会话（含搜索 / 归档 / 标签） |
+| `/api/sessions/search` | GET | 搜索会话（`@` 引用用） |
 | `/api/sessions/{id}` | GET/PATCH/DELETE | 查看 / 修改 / 删除会话 |
+| `/api/sessions/{id}/clear` | POST | 清空当前会话历史，保留本地 session id |
+| `/api/sessions/{id}/compact` | POST | 用 Haiku 压缩旧历史，备份原 JSONL 并重置远端会话缓存 |
 | `/api/sessions/{id}/export` | GET | 导出 Markdown |
+| `/api/sessions/{id}/usage` | GET | 查看当前会话 token / 成本累计 |
+| `/api/sessions/{id}/mention` | GET | 把会话内容整理成可引用上下文 |
 | `/api/sessions/{id}/prepare-fork` | POST | 创建分叉会话 |
 | `/api/sessions/{id}/prepare-inline-edit` | POST | 就地编辑历史消息并从该轮继续 |
 | `/api/sessions/{id}/restore-checkpoint` | POST | Git 回滚 |
 | `/api/sessions/{id}/suggest-title` | POST | AI 智能命名 |
 | `/api/suggest-followups` | POST | 生成跟进建议 |
 | `/api/prompts` | GET/POST/PUT/DELETE | 提示词模板 CRUD |
+| `/api/prompts/search` | GET | 搜索提示词模板（`@` 引用和 Slash 自定义模板用） |
+| `/api/projects/scan` | POST | 扫描项目关键文件和目录结构，供 `/init` 生成 `CLAUDE.md` 草稿 |
+| `/api/memories` | GET/POST/PUT/DELETE | 持久记忆 CRUD（全局 / 项目 / 会话 scope） |
+| `/api/memories/active` | GET | 查看当前 cwd / session 生效的记忆 |
+| `/api/memories/search` | GET | 搜索记忆（`@` 引用用） |
 | `/api/stats` | GET | 使用统计（成本 / 工具 / 每日） |
 | `/api/git` | GET | 当前目录 git 状态 |
 | `/api/files` | GET | 当前目录文件列表（@ 引用用） |
@@ -295,6 +313,8 @@ claude-web/
 - **权限审批是"失败后重试"模式**：不是 Cursor 那种执行中实时弹窗。当 Claude 因权限被拒时，UI 会显示琥珀色提示卡片，用户点击「允许 xxx 并重试」后系统自动把工具加入白名单并重发本轮。体验上多等一轮（20-30 秒），但功能完整。真正的实时交互审批需自建 MCP 权限服务器或双向 stream-json 通信。
 - **Checkpoint 仅限 git 仓库**：非 git 目录跳过（后续可加 tar 快照）。
 - **分叉会话会打包上下文**：编辑/重新生成时把历史作为前缀发给 Claude（可能多消耗 token）。
+- **`/compact` 会调用模型**：压缩会话历史会额外调用一次 Haiku；原历史会备份到 `history/{sid}.before-compact-*.jsonl`，并自动清理旧备份。
+- **`/init` 不直接写文件**：只把 `CLAUDE.md` 草稿 prompt 填入输入框，发送后由用户审阅再决定是否写入项目。
 - **无鉴权**：仅供本地使用，不建议直接暴露公网。
 - **代码块运行无沙盒**：Python/JS/Bash 直接在本机跑，点运行前会二次确认。
 - **Claude CLI `-p` 模式流式局限**：CLI 在非交互模式下会整段缓冲后一次性吐事件，token 流式是"视觉动画模拟"，非真实 token 速率。
@@ -308,7 +328,8 @@ claude-web/
 #### 已实现 ✅
 - [x] 多轮对话、停止生成、图片输入、工具调用可视化、思考过程展示
 - [x] 文档上传（PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG）和 URL 自动抓取上下文
-- [x] 联网搜索开关、`@` 文件引用、Token 估算、草稿自动保存、提示词模板库
+- [x] 联网搜索开关、`@` 文件 / 会话 / 提示词 / 记忆引用、Token 估算、草稿自动保存、提示词模板库
+- [x] Slash 命令菜单（`/new` `/clear` `/fork` `/compact` `/init` + 内置 / 自定义模板）
 - [x] Mermaid / LaTeX 渲染、图片 Lightbox、代码块复制与本地运行
 - [x] 会话置顶 / 归档 / 标签 / 搜索 / 导出 / 双击重命名 / AI 智能命名
 - [x] 历史消息就地编辑继续、重新生成分叉、Git checkpoint 回滚
@@ -328,7 +349,6 @@ claude-web/
 
 ### 待办
 - [ ] Artifacts 侧边预览（HTML/React 实时渲染）
-- [ ] Slash 命令透传（`/compact` `/clear` `/init`）
 - [ ] 导入 `~/.claude/projects/` 原生会话
 - [ ] 基于 MCP 的真·交互审批
 - [ ] 简单鉴权（Token / 密码）

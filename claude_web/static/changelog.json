@@ -2,6 +2,21 @@
   "$schema": "https://json.schemastore.org/changelog.json",
   "releases": [
     {
+      "version": "1.5.0",
+      "date": "2026-05-23",
+      "highlights": [
+        { "type": "feature", "text": "输入框新增完整 Slash 命令菜单：操作、重操作、内置模板和个人模板分组展示，支持 ↑↓ / Tab / Enter / Esc 键盘导航" },
+        { "type": "feature", "text": "新增 /compact：用 Haiku 压缩旧会话历史，保留最近 2 轮原文并自动备份原 JSONL，显著降低后续上下文成本" },
+        { "type": "feature", "text": "新增 /clear、/new、/fork：清空当前会话、新建会话、基于最后一条用户消息分叉到新会话" },
+        { "type": "feature", "text": "新增 /init：扫描当前项目 README / package.json / pyproject.toml / 目录结构，生成 CLAUDE.md 草稿到输入框供用户审阅" },
+        { "type": "feature", "text": "新增七个内置模板：/recap、/test、/explain、/review、/refactor、/commit、/docs；个人提示词可设置 slash_trigger 后显示在「我的模板」分组" },
+        { "type": "fix", "text": "Slash 命令支持只输入 / 即弹出菜单，同时避免 /usr/local、项目/ 这类路径误触发" },
+        { "type": "fix", "text": "/compact 与发送、停止、分叉、清空、删除互斥，避免压缩期间会话历史被并发改写" },
+        { "type": "fix", "text": "切换会话、新建会话、发送消息时自动关闭 Slash / @ 引用浮层" },
+        { "type": "fix", "text": "压缩备份会随会话删除一并清理，并自动保留最近 3 份或 7 天内备份" }
+      ]
+    },
+    {
       "version": "1.4.1",
       "date": "2026-05-21",
       "highlights": [
