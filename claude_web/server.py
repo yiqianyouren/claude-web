@@ -3,6 +3,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import sqlite3
 import time
@@ -45,6 +46,89 @@ KNOWN_TOOL_NAMES = {
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
 _stopped_sessions: Set[str] = set()
 _compacting_sessions: Set[str] = set()
+
+
+class ClaudeCliResolutionError(RuntimeError):
+    pass
+
+
+def resolve_claude_cli_command() -> Optional[str]:
+    candidates = ["claude"]
+    if os.name == "nt":
+        # npm on Windows may put both a Unix shim named "claude" and a usable
+        # batch shim named "claude.cmd" on PATH. Python can pick the Unix shim
+        # first, so prefer Windows-native launchers explicitly.
+        candidates = ["claude.cmd", "claude.exe", "claude.bat", "claude"]
+    for candidate in candidates:
+        path = shutil.which(candidate)
+        if path:
+            return path
+    return None
+
+
+def claude_cli_command() -> str:
+    command = resolve_claude_cli_command()
+    if command:
+        return command
+    return "claude.cmd" if os.name == "nt" else "claude"
+
+
+def _claude_package_bin(package_dir: Path) -> Optional[Path]:
+    package_json = package_dir / "package.json"
+    if package_json.exists():
+        try:
+            data = json.loads(package_json.read_text(encoding="utf-8"))
+            bin_entry = data.get("bin")
+            if isinstance(bin_entry, dict):
+                bin_entry = bin_entry.get("claude") or next(iter(bin_entry.values()), None)
+            if isinstance(bin_entry, str):
+                candidate = (package_dir / bin_entry).resolve()
+                if candidate.exists():
+                    return candidate
+        except Exception:
+            pass
+    for name in ("cli.js", "cli.mjs"):
+        candidate = package_dir / name
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _windows_claude_node_argv(command: str) -> Optional[List[str]]:
+    command_path = Path(command)
+    bin_dir = command_path.parent
+    package_dirs = [
+        bin_dir / "node_modules" / "@anthropic-ai" / "claude-code",
+        bin_dir.parent / "@anthropic-ai" / "claude-code",
+    ]
+    script = next((p for p in (_claude_package_bin(d) for d in package_dirs) if p), None)
+    if script is None:
+        return None
+
+    node_candidates = [
+        bin_dir / "node.exe",
+        shutil.which("node.exe"),
+        shutil.which("node"),
+    ]
+    node = next((str(p) for p in node_candidates if p and Path(p).exists()), None)
+    if node is None:
+        return None
+    return [node, str(script)]
+
+
+def claude_cli_argv(*args: str, allow_batch_shim: bool = False) -> List[str]:
+    command = resolve_claude_cli_command()
+    if command is None:
+        return ["claude.cmd" if os.name == "nt" else "claude", *args]
+    if os.name == "nt" and command.lower().endswith((".cmd", ".bat")):
+        node_argv = _windows_claude_node_argv(command)
+        if node_argv:
+            return [*node_argv, *args]
+        if not allow_batch_shim:
+            raise ClaudeCliResolutionError(
+                "claude CLI batch shim found, but the Node.js entrypoint could not be resolved"
+            )
+    return [command, *args]
 
 
 async def _terminate_process(process: asyncio.subprocess.Process, grace: float = 3.0) -> None:
@@ -441,7 +525,7 @@ def build_args(
     disallowed_tools: Optional[List[str]] = None,
     use_stdin: bool = False,
 ) -> List[str]:
-    args = ["claude"]
+    args = claude_cli_argv()
     if use_stdin:
         args += ["-p", "--input-format", "stream-json"]
     else:
@@ -757,16 +841,22 @@ async def chat(req: ChatRequest):
             load_enabled_memories(work_dir, session_id),
             req.system_prompt,
         )
-        args = build_args(
-            full_message, remote_session_id,
-            resume=not is_new,
-            model=req.model,
-            system_prompt=effective_system_prompt,
-            permission_mode=req.permission_mode,
-            allowed_tools=req.allowed_tools,
-            disallowed_tools=req.disallowed_tools,
-            use_stdin=use_stdin,
-        )
+        try:
+            args = build_args(
+                full_message, remote_session_id,
+                resume=not is_new,
+                model=req.model,
+                system_prompt=effective_system_prompt,
+                permission_mode=req.permission_mode,
+                allowed_tools=req.allowed_tools,
+                disallowed_tools=req.disallowed_tools,
+                use_stdin=use_stdin,
+            )
+        except ClaudeCliResolutionError as e:
+            err_event = {"type": "error", "message": str(e)}
+            append_event(session_id, err_event)
+            yield f"data: {json.dumps(err_event, ensure_ascii=False)}\n\n"
+            return
         stdin_data: Optional[bytes] = None
         if use_stdin:
             stdin_data = build_image_input_message(full_message, req.images or [])
@@ -1609,7 +1699,7 @@ async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=
             + snippet
         )
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", summary_prompt, "--output-format", "text", "--model", "haiku",
+            *claude_cli_argv("-p", summary_prompt, "--output-format", "text", "--model", "haiku"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -1645,6 +1735,8 @@ async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=
             conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
         set_session_remote_state(session_id, "", False)
         return {"ok": True, "kept_turns": keep_last, "backup": backup_name}
+    except ClaudeCliResolutionError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     except FileNotFoundError:
         raise HTTPException(status_code=500, detail="claude CLI not found in PATH")
     finally:
@@ -1662,7 +1754,7 @@ async def suggest_title(session_id: str):
     prompt = f"根据下面的对话，用中文生成一个不超过15字、不带引号的会话标题（只输出标题本身）：\n\n{summary}"
     try:
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", prompt, "--output-format", "text",
+            *claude_cli_argv("-p", prompt, "--output-format", "text"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -1674,6 +1766,8 @@ async def suggest_title(session_id: str):
             raise HTTPException(status_code=504, detail="title generation timeout")
     except HTTPException:
         raise
+    except ClaudeCliResolutionError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     title = stdout.decode("utf-8", errors="replace").strip().splitlines()[0].strip(' "\'"""''').strip()[:60]
     if not title:
         raise HTTPException(status_code=500, detail="empty title")
@@ -1977,7 +2071,7 @@ async def suggest_followups(session_id: str = ""):
     )
     try:
         proc = await asyncio.create_subprocess_exec(
-            "claude", "-p", prompt, "--output-format", "text", "--model", "haiku",
+            *claude_cli_argv("-p", prompt, "--output-format", "text", "--model", "haiku"),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -2751,21 +2845,21 @@ async def index():
 
 def _check_claude_cli() -> Optional[str]:
     """Return claude CLI version string if available, else None."""
-    import shutil
     import subprocess
 
-    if shutil.which("claude") is None:
+    command = resolve_claude_cli_command()
+    if command is None:
         return None
     try:
         result = subprocess.run(
-            ["claude", "--version"],
+            claude_cli_argv("--version", allow_batch_shim=True),
             capture_output=True,
             text=True,
             timeout=5,
         )
         if result.returncode == 0:
-            return result.stdout.strip() or "unknown"
-    except (subprocess.TimeoutExpired, OSError):
+            return result.stdout.strip() or result.stderr.strip() or "unknown"
+    except (subprocess.TimeoutExpired, OSError, ClaudeCliResolutionError):
         pass
     return "unknown"
 
