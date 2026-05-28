@@ -2,6 +2,10 @@
 
 所有重要变更按版本记录。应用内的 What's New 和帮助面板使用 `static/changelog.json`，这里是给 GitHub / Git diff 浏览的 Markdown 版本。
 
+## v1.5.3 - 2026-05-28
+
+- **FIX** Windows 上 claude-code 2.x 的原生 `bin/claude.exe` 启动器不再被错当成 JS 喂给 node，启动横幅显示真实版本而非 "unknown"，聊天 / compact / 智能命名等所有 CLI 调用路径一并修复
+
 ## v1.5.0 - 2026-05-23
 
 - **FEATURE** 输入框新增完整 Slash 命令菜单：操作、重操作、内置模板和个人模板分组展示，支持 ↑↓ / Tab / Enter / Esc 键盘导航

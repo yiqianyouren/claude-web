@@ -2,6 +2,13 @@
   "$schema": "https://json.schemastore.org/changelog.json",
   "releases": [
     {
+      "version": "1.5.3",
+      "date": "2026-05-28",
+      "highlights": [
+        { "type": "fix", "text": "Windows 上 claude-code 2.x 的原生 bin/claude.exe 启动器不再被错当成 JS 喂给 node，启动横幅显示真实版本而非 \"unknown\"，聊天 / compact / 智能命名等所有 CLI 调用路径一并修复" }
+      ]
+    },
+    {
       "version": "1.5.0",
       "date": "2026-05-23",
       "highlights": [
