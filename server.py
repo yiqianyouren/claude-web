@@ -6,6 +6,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager, contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -46,6 +47,13 @@ KNOWN_TOOL_NAMES = {
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
 _stopped_sessions: Set[str] = set()
 _compacting_sessions: Set[str] = set()
+_event_locks: Dict[str, threading.Lock] = {}
+_event_lock_refs: Dict[str, int] = {}
+_event_lock_access: Dict[str, float] = {}
+_event_locks_guard = threading.Lock()
+_MAX_EVENT_LOCKS = 1024
+_stats_backfill_lock: Optional[asyncio.Lock] = None
+_stats_backfill_done = False
 
 
 class ClaudeCliResolutionError(RuntimeError):
@@ -248,6 +256,43 @@ def ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+@contextmanager
+def session_event_lock(session_id: str) -> Iterator[None]:
+    now = time.time()
+    with _event_locks_guard:
+        lock = _event_locks.get(session_id)
+        if lock is None:
+            lock = threading.Lock()
+            _event_locks[session_id] = lock
+            _event_lock_refs[session_id] = 0
+        _event_lock_refs[session_id] = _event_lock_refs.get(session_id, 0) + 1
+        _event_lock_access[session_id] = now
+    lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+        with _event_locks_guard:
+            _event_lock_refs[session_id] = max(_event_lock_refs.get(session_id, 1) - 1, 0)
+            _event_lock_access[session_id] = time.time()
+            prune_event_locks_locked()
+
+
+def prune_event_locks_locked() -> None:
+    if len(_event_locks) <= _MAX_EVENT_LOCKS:
+        return
+    removable = [
+        (last_access, sid)
+        for sid, last_access in _event_lock_access.items()
+        if _event_lock_refs.get(sid, 0) == 0
+    ]
+    removable.sort()
+    for _, sid in removable[: max(1, len(_event_locks) - _MAX_EVENT_LOCKS)]:
+        _event_locks.pop(sid, None)
+        _event_lock_refs.pop(sid, None)
+        _event_lock_access.pop(sid, None)
+
+
 def init_db() -> None:
     with db_connect() as conn:
         conn.execute(
@@ -304,9 +349,33 @@ def init_db() -> None:
         ensure_column(conn, "sessions", "manual_title", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "remote_session_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "sessions", "remote_ready", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "sessions", "summary_cache", "TEXT")
         ensure_column(conn, "prompts", "slash_trigger", "TEXT NOT NULL DEFAULT ''")
+        ensure_column(conn, "session_usage", "duration_ms", "REAL NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tool_calls (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                ts REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_session_usage_session ON session_usage(session_id, turn_idx)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_session_usage_ts ON session_usage(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_calls_name ON tool_calls(tool_name)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, enabled)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_summary_cache ON sessions(summary_cache)")
 
 
 init_db()
@@ -333,10 +402,93 @@ def upsert_session(session_id: str, title: str, cwd: str) -> None:
             )
 
 
+_SUMMARY_CACHE_LIMIT = 20000
+
+
+def trim_summary_cache(text: str) -> str:
+    return text[-_SUMMARY_CACHE_LIMIT:]
+
+
+def summarize_cache_from_events(events: List[dict]) -> str:
+    return trim_summary_cache(summarize_text_from_events(events))
+
+
+def set_session_summary_cache(session_id: str, summary: str) -> None:
+    with db_connect() as conn:
+        conn.execute("UPDATE sessions SET summary_cache = ? WHERE id = ?", (summary, session_id))
+
+
+def update_session_summary_cache_for_event(conn: sqlite3.Connection, session_id: str, event: dict) -> None:
+    snippet = summarize_text_from_events([event]).strip()
+    if not snippet:
+        return
+    conn.execute(
+        """
+        UPDATE sessions
+        SET summary_cache = substr(COALESCE(summary_cache, '') || ? || char(10), ?)
+        WHERE id = ?
+        """,
+        (snippet, -_SUMMARY_CACHE_LIMIT, session_id),
+    )
+
+
+def ensure_session_summary_cache(session_id: str, current_summary: Optional[str]) -> str:
+    if current_summary is not None:
+        return current_summary
+    events = load_events(session_id)
+    summary = summarize_cache_from_events(events)
+    set_session_summary_cache(session_id, summary)
+    return summary
+
+
+def tool_call_rows_from_event(session_id: str, event: dict) -> List[tuple]:
+    if event.get("type") != "assistant":
+        return []
+    content = (event.get("message") or {}).get("content") or []
+    names = [
+        block.get("name") or "?"
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    if not names:
+        return []
+    now = float(event.get("ts") or time.time())
+    return [(uuid.uuid4().hex, session_id, name, now) for name in names]
+
+
+def insert_tool_call_rows(conn: sqlite3.Connection, rows: List[tuple]) -> None:
+    if not rows:
+        return
+    conn.executemany(
+        "INSERT INTO tool_calls (id, session_id, tool_name, ts) VALUES (?, ?, ?, ?)",
+        rows,
+    )
+
+
+def replace_session_tool_call_rows(conn: sqlite3.Connection, session_id: str, events: List[dict]) -> None:
+    conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
+    rows: List[tuple] = []
+    for event in events:
+        rows.extend(tool_call_rows_from_event(session_id, event))
+    insert_tool_call_rows(conn, rows)
+
+
+def record_tool_calls(session_id: str, event: dict) -> None:
+    rows = tool_call_rows_from_event(session_id, event)
+    if not rows:
+        return
+    with db_connect() as conn:
+        insert_tool_call_rows(conn, rows)
+
+
 def append_event(session_id: str, event: dict) -> None:
     path = HISTORY_DIR / f"{session_id}.jsonl"
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    with session_event_lock(session_id):
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        with db_connect() as conn:
+            update_session_summary_cache_for_event(conn, session_id, event)
+            insert_tool_call_rows(conn, tool_call_rows_from_event(session_id, event))
 
 
 def record_usage(session_id: str, result_event: dict) -> None:
@@ -348,6 +500,7 @@ def record_usage(session_id: str, result_event: dict) -> None:
     cache_read = int(usage.get("cache_read_input_tokens") or 0)
     cache_create = int(usage.get("cache_creation_input_tokens") or 0)
     cost = float(result_event.get("total_cost_usd") or 0)
+    duration_ms = float(result_event.get("duration_ms") or 0)
     if input_tokens == 0 and output_tokens == 0 and cache_read == 0 and cache_create == 0 and cost == 0:
         return
     with db_connect() as conn:
@@ -356,16 +509,16 @@ def record_usage(session_id: str, result_event: dict) -> None:
             INSERT INTO session_usage (
                 id, session_id, turn_idx, input_tokens, output_tokens,
                 cache_read_input_tokens, cache_creation_input_tokens,
-                total_cost_usd, ts
+                total_cost_usd, duration_ms, ts
             ) VALUES (
                 ?, ?,
                 COALESCE((SELECT MAX(turn_idx) FROM session_usage WHERE session_id = ?), 0) + 1,
-                ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?
             )
             """,
             (
                 uuid.uuid4().hex, session_id, session_id, input_tokens, output_tokens,
-                cache_read, cache_create, cost, time.time(),
+                cache_read, cache_create, cost, duration_ms, time.time(),
             ),
         )
 
@@ -436,23 +589,112 @@ def load_events(session_id: str) -> List[dict]:
     return events
 
 
+def iter_history_paths() -> Iterator[Path]:
+    for path in HISTORY_DIR.glob("*.jsonl"):
+        if ".before-compact-" in path.name or ".tmp." in path.name:
+            continue
+        yield path
+
+
+def backfill_tool_calls_once() -> None:
+    try:
+        with db_connect() as conn:
+            row = conn.execute("SELECT value FROM app_meta WHERE key = 'tool_calls_backfilled_v1'").fetchone()
+            if row is not None:
+                return
+            conn.execute("DELETE FROM tool_calls")
+            rows: List[tuple] = []
+            for path in iter_history_paths():
+                session_id = path.stem
+                for event in load_events(session_id):
+                    rows.extend(tool_call_rows_from_event(session_id, event))
+                    if len(rows) >= 1000:
+                        insert_tool_call_rows(conn, rows)
+                        rows = []
+            insert_tool_call_rows(conn, rows)
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('tool_calls_backfilled_v1', ?)",
+                (str(time.time()),),
+            )
+    except Exception:
+        return
+
+
+def backfill_usage_duration_once() -> None:
+    try:
+        with db_connect() as conn:
+            row = conn.execute("SELECT value FROM app_meta WHERE key = 'usage_duration_backfilled_v1'").fetchone()
+            if row is not None:
+                return
+            for path in iter_history_paths():
+                session_id = path.stem
+                result_events = [event for event in load_events(session_id) if event.get("type") == "result"]
+                if not result_events:
+                    continue
+                usage_rows = conn.execute(
+                    """
+                    SELECT id, duration_ms
+                    FROM session_usage
+                    WHERE session_id = ?
+                    ORDER BY turn_idx
+                    """,
+                    (session_id,),
+                ).fetchall()
+                for usage_row, event in zip(usage_rows, result_events):
+                    duration_ms = float(event.get("duration_ms") or 0)
+                    if duration_ms > 0 and float(usage_row["duration_ms"] or 0) == 0:
+                        conn.execute(
+                            "UPDATE session_usage SET duration_ms = ? WHERE id = ?",
+                            (duration_ms, usage_row["id"]),
+                        )
+            conn.execute(
+                "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('usage_duration_backfilled_v1', ?)",
+                (str(time.time()),),
+            )
+    except Exception:
+        return
+
+
+async def ensure_stats_backfilled() -> None:
+    global _stats_backfill_done, _stats_backfill_lock
+    if _stats_backfill_done:
+        return
+    if _stats_backfill_lock is None:
+        _stats_backfill_lock = asyncio.Lock()
+    if _stats_backfill_lock.locked():
+        return
+    async with _stats_backfill_lock:
+        if _stats_backfill_done:
+            return
+        await asyncio.to_thread(backfill_usage_duration_once)
+        await asyncio.to_thread(backfill_tool_calls_once)
+        _stats_backfill_done = True
+
+
 def save_events(session_id: str, events: List[dict]) -> None:
     path = HISTORY_DIR / f"{session_id}.jsonl"
-    if not events:
-        if path.exists():
-            path.unlink()
-        return
-    tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
-    try:
-        with tmp_path.open("w", encoding="utf-8") as f:
-            for event in events:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
-        raise
+    with session_event_lock(session_id):
+        if not events:
+            if path.exists():
+                path.unlink()
+            with db_connect() as conn:
+                conn.execute("UPDATE sessions SET summary_cache = ? WHERE id = ?", ("", session_id))
+                conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
+            return
+        tmp_path = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+        try:
+            with tmp_path.open("w", encoding="utf-8") as f:
+                for event in events:
+                    f.write(json.dumps(event, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
+        with db_connect() as conn:
+            conn.execute("UPDATE sessions SET summary_cache = ? WHERE id = ?", (summarize_cache_from_events(events), session_id))
+            replace_session_tool_call_rows(conn, session_id, events)
 
 
 def summarize_text_from_events(events: List[dict]) -> str:
@@ -731,6 +973,8 @@ def derive_title(message: str) -> str:
 def session_has_remote_conversation(events: List[dict]) -> bool:
     for ev in events:
         event_type = ev.get("type")
+        if event_type == "user_input" and ev.get("compacted") is True:
+            return True
         if event_type == "assistant":
             return True
         if event_type == "system" and ev.get("subtype") == "init":
@@ -760,7 +1004,7 @@ def set_session_remote_state(session_id: str, remote_session_id: str, remote_rea
 
 def prune_session_compact_backups(session_id: str, keep_latest: int = 3, max_age_seconds: int = 7 * 24 * 60 * 60) -> None:
     backups = sorted(
-        HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"),
+        iter_session_compact_backups(session_id),
         key=lambda x: x.stat().st_mtime,
         reverse=True,
     )
@@ -771,6 +1015,17 @@ def prune_session_compact_backups(session_id: str, keep_latest: int = 3, max_age
                 backup.unlink(missing_ok=True)
         except OSError:
             continue
+
+
+def iter_session_compact_backups(session_id: str) -> List[Path]:
+    prefix = f"{session_id}.before-compact-"
+    try:
+        return [
+            path for path in HISTORY_DIR.iterdir()
+            if path.is_file() and path.name.startswith(prefix) and path.name.endswith(".jsonl")
+        ]
+    except OSError:
+        return []
 
 
 @app.post("/api/chat")
@@ -815,8 +1070,8 @@ async def chat(req: ChatRequest):
     # after the upload file is pruned. Only stored when it actually differs.
     if req.message != display_text:
         user_event["full_text"] = req.message
-    append_event(session_id, user_event)
     upsert_session(session_id, derive_title(display_text), work_dir)
+    append_event(session_id, user_event)
     set_session_remote_state(session_id, remote_session_id, remote_ready and not is_new)
 
     async def generate():
@@ -836,6 +1091,7 @@ async def chat(req: ChatRequest):
         existing = _running_processes.pop(session_id, None)
         if existing is not None:
             await _terminate_process(existing)
+        _stopped_sessions.discard(session_id)
 
         has_images = bool(req.images)
         # Route through stdin when the prompt would blow past argv limits
@@ -947,9 +1203,9 @@ async def chat(req: ChatRequest):
             _running_processes.pop(session_id, None)
             _stopped_sessions.discard(session_id)
 
-        upsert_session(session_id, derive_title(display_text), work_dir)
-        if remote_became_ready:
-            set_session_remote_state(session_id, remote_session_id, True)
+            upsert_session(session_id, derive_title(display_text), work_dir)
+            if remote_became_ready:
+                set_session_remote_state(session_id, remote_session_id, True)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(
@@ -1021,8 +1277,8 @@ async def prepare_fork(session_id: str, req: ForkRequest):
 
 @app.post("/api/sessions/{session_id}/prepare-inline-edit")
 async def prepare_inline_edit(session_id: str, req: ForkRequest):
-    if session_id in _running_processes:
-        raise HTTPException(status_code=409, detail="session is running")
+    if session_id in _running_processes or session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is busy")
 
     events = load_events(session_id)
     user_event_positions = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
@@ -1553,11 +1809,15 @@ async def list_sessions(q: Optional[str] = None, archived: bool = False, tag: Op
     with db_connect() as conn:
         where = "archived = 1" if archived else "archived = 0"
         rows = conn.execute(
-            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags FROM sessions "
+            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, summary_cache FROM sessions "
             f"WHERE {where} ORDER BY pinned DESC, updated_at DESC LIMIT 500"
         ).fetchall()
 
-    items = [_row_to_session(r) for r in rows]
+    items = []
+    for r in rows:
+        item = _row_to_session(r)
+        item["_summary_cache"] = r["summary_cache"]
+        items.append(item)
 
     if tag:
         items = [i for i in items if tag in i["tags"]]
@@ -1570,14 +1830,20 @@ async def list_sessions(q: Optional[str] = None, archived: bool = False, tag: Op
                 filtered.append(item)
                 continue
             try:
-                events = load_events(item["id"])
-                content = summarize_text_from_events(events).lower()
+                content = ensure_session_summary_cache(item["id"], item.get("_summary_cache")).lower()
                 if q_lower in content:
                     filtered.append(item)
+                    continue
+                if len(content) >= _SUMMARY_CACHE_LIMIT:
+                    full_content = summarize_text_from_events(load_events(item["id"])).lower()
+                    if q_lower in full_content:
+                        filtered.append(item)
             except Exception:
                 continue
         items = filtered
 
+    for item in items:
+        item.pop("_summary_cache", None)
     return items
 
 
@@ -1623,7 +1889,7 @@ async def get_session(session_id: str):
     data["events"] = load_events(session_id)
     data["compact_backups"] = [
         {"name": p.name, "created_at": p.stat().st_mtime, "size": p.stat().st_size}
-        for p in sorted(HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"), key=lambda x: x.stat().st_mtime, reverse=True)
+        for p in sorted(iter_session_compact_backups(session_id), key=lambda x: x.stat().st_mtime, reverse=True)
     ]
     return data
 
@@ -1659,11 +1925,12 @@ async def delete_session(session_id: str):
     with db_connect() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM memories WHERE scope = ?", (f"session:{session_id}",))
     path = HISTORY_DIR / f"{session_id}.jsonl"
     if path.exists():
         path.unlink()
-    for backup in HISTORY_DIR.glob(f"{session_id}.before-compact-*.jsonl"):
+    for backup in iter_session_compact_backups(session_id):
         backup.unlink(missing_ok=True)
     return {"ok": True}
 
@@ -1674,7 +1941,6 @@ async def clear_session(session_id: str):
         raise HTTPException(status_code=409, detail="session is busy")
     save_events(session_id, [])
     with db_connect() as conn:
-        conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
         conn.execute("UPDATE sessions SET title = '新会话', manual_title = 0, updated_at = ? WHERE id = ?", (time.time(), session_id))
     set_session_remote_state(session_id, "", False)
     return {"ok": True}
@@ -1736,8 +2002,6 @@ async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=
             }
         ] + new_events
         save_events(session_id, compacted)
-        with db_connect() as conn:
-            conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
         set_session_remote_state(session_id, "", False)
         return {"ok": True, "kept_turns": keep_last, "backup": backup_name}
     except ClaudeCliResolutionError as e:
@@ -1773,6 +2037,8 @@ async def suggest_title(session_id: str):
         raise
     except ClaudeCliResolutionError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"title generation failed: {e}")
     title = stdout.decode("utf-8", errors="replace").strip().splitlines()[0].strip(' "\'"""''').strip()[:60]
     if not title:
         raise HTTPException(status_code=500, detail="empty title")
@@ -1972,17 +2238,21 @@ async def update_memory(memory_id: str, req: MemoryRequest):
         raise HTTPException(status_code=400, detail="content required")
     scope = normalize_memory_scope(req.scope)
     with db_connect() as conn:
-        conn.execute(
+        cursor = conn.execute(
             "UPDATE memories SET content = ?, enabled = ?, scope = ?, updated_at = ? WHERE id = ?",
             (content, 1 if req.enabled else 0, scope, time.time(), memory_id),
         )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="memory not found")
     return {"ok": True}
 
 
 @app.delete("/api/memories/{memory_id}")
 async def delete_memory(memory_id: str):
     with db_connect() as conn:
-        conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="memory not found")
     return {"ok": True}
 
 
@@ -2045,17 +2315,21 @@ async def create_prompt(req: PromptRequest):
 @app.put("/api/prompts/{prompt_id}")
 async def update_prompt(prompt_id: str, req: PromptRequest):
     with db_connect() as conn:
-        conn.execute(
+        cursor = conn.execute(
             "UPDATE prompts SET name = ?, content = ?, slash_trigger = ? WHERE id = ?",
             (req.name, req.content, (req.slash_trigger or "").strip().lstrip("/"), prompt_id),
         )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="prompt not found")
     return {"ok": True}
 
 
 @app.delete("/api/prompts/{prompt_id}")
 async def delete_prompt(prompt_id: str):
     with db_connect() as conn:
-        conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
+        cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="prompt not found")
     return {"ok": True}
 
 
@@ -2482,44 +2756,48 @@ async def list_tags():
 
 @app.get("/api/stats")
 async def stats():
-    total_cost = 0.0
-    total_duration = 0.0
-    total_turns = 0
-    daily: Dict[str, Dict[str, float]] = defaultdict(lambda: {"cost": 0.0, "turns": 0})
-    tool_counts: Dict[str, int] = defaultdict(int)
+    await ensure_stats_backfilled()
     with db_connect() as conn:
-        rows = conn.execute("SELECT id FROM sessions").fetchall()
-    total_sessions = len(rows)
-    for row in rows:
-        events = load_events(row["id"])
-        for ev in events:
-            t = ev.get("type")
-            if t == "result":
-                cost = float(ev.get("total_cost_usd") or 0)
-                dur = float(ev.get("duration_ms") or 0)
-                ts = float(ev.get("ts") or time.time())
-                total_cost += cost
-                total_duration += dur
-                total_turns += 1
-                day = time.strftime("%Y-%m-%d", time.localtime(ts))
-                daily[day]["cost"] += cost
-                daily[day]["turns"] += 1
-            elif t == "assistant":
-                content = (ev.get("message") or {}).get("content") or []
-                for block in content:
-                    if block.get("type") == "tool_use":
-                        tool_counts[block.get("name", "?")] += 1
-    daily_sorted = sorted(daily.items(), key=lambda x: x[0])
+        total_sessions = conn.execute("SELECT COUNT(*) AS c FROM sessions").fetchone()["c"]
+        usage = conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+                COALESCE(SUM(duration_ms), 0) AS total_duration,
+                COUNT(*) AS total_turns
+            FROM session_usage
+            """
+        ).fetchone()
+        daily_rows = conn.execute(
+            """
+            SELECT date(ts, 'unixepoch', 'localtime') AS day,
+                   COALESCE(SUM(total_cost_usd), 0) AS cost,
+                   COUNT(*) AS turns
+            FROM session_usage
+            GROUP BY day
+            ORDER BY day
+            """
+        ).fetchall()
+        tool_rows = conn.execute(
+            """
+            SELECT tool_name AS name, COUNT(*) AS count
+            FROM tool_calls
+            GROUP BY tool_name
+            ORDER BY count DESC
+            LIMIT 10
+            """
+        ).fetchall()
     return {
-        "total_cost_usd": round(total_cost, 4),
-        "total_duration_ms": total_duration,
+        "total_cost_usd": round(float(usage["total_cost"] or 0), 4),
+        "total_duration_ms": float(usage["total_duration"] or 0),
         "total_sessions": total_sessions,
-        "total_turns": total_turns,
-        "daily": [{"date": d, "cost": round(v["cost"], 4), "turns": v["turns"]} for d, v in daily_sorted],
-        "tools": sorted(
-            [{"name": k, "count": v} for k, v in tool_counts.items()],
-            key=lambda x: -x["count"],
-        )[:10],
+        "total_turns": int(usage["total_turns"] or 0),
+        "daily": [
+            {"date": r["day"], "cost": round(float(r["cost"] or 0), 4), "turns": r["turns"]}
+            for r in daily_rows
+            if r["day"] is not None
+        ],
+        "tools": [{"name": r["name"], "count": r["count"]} for r in tool_rows],
     }
 
 
@@ -2767,38 +3045,79 @@ def _extract_html_text(html: str) -> str:
     return extractor.get_text()
 
 
+_MAX_FETCH_REDIRECTS = 5
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
 def _is_private_host(host: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
-        return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        return not ip.is_global
     except ValueError:
-        try:
-            resolved = socket.gethostbyname(host)
-            ip = ipaddress.ip_address(resolved)
-            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-        except Exception:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except Exception:
+        return True
+    if not infos:
+        return True
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
             return True
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+        except ValueError:
+            return True
+        if not ip.is_global:
+            return True
+    return False
 
 
-@app.post("/api/fetch-url")
-async def fetch_url(req: FetchUrlRequest):
-    parsed = urlparse(req.url)
+def _validate_public_fetch_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="only http/https allowed")
     if not parsed.hostname:
         raise HTTPException(status_code=400, detail="invalid url")
     if _is_private_host(parsed.hostname):
         raise HTTPException(status_code=400, detail="refusing to fetch private/internal host")
+    return raw_url
 
+
+def _open_public_url(raw_url: str, headers: Dict[str, str]):
+    current_url = _validate_public_fetch_url(raw_url)
+    for _ in range(_MAX_FETCH_REDIRECTS + 1):
+        request = urllib.request.Request(current_url, headers=headers)
+        try:
+            return _NO_REDIRECT_OPENER.open(request, timeout=10)
+        except urllib.error.HTTPError as e:
+            if e.code not in _REDIRECT_STATUS_CODES:
+                raise
+            location = e.headers.get("Location")
+            if not location:
+                raise HTTPException(status_code=502, detail="redirect missing Location")
+            current_url = _validate_public_fetch_url(urljoin(current_url, location))
+    raise HTTPException(status_code=508, detail="too many redirects")
+
+
+@app.post("/api/fetch-url")
+async def fetch_url(req: FetchUrlRequest):
     def _do_fetch() -> Dict[str, str]:
-        request = urllib.request.Request(
-            req.url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (compatible; ClaudeWeb/1.0)",
-                "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
-            },
-        )
-        with urllib.request.urlopen(request, timeout=10) as resp:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (compatible; ClaudeWeb/1.0)",
+            "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+        }
+        with _open_public_url(req.url, headers) as resp:
             content_type = resp.headers.get("Content-Type", "") or ""
             charset = "utf-8"
             if "charset=" in content_type:
@@ -2812,6 +3131,8 @@ async def fetch_url(req: FetchUrlRequest):
 
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _do_fetch)
+    except HTTPException:
+        raise
     except urllib.error.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"remote {e.code}")
     except urllib.error.URLError as e:

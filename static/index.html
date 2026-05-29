@@ -10,6 +10,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config = { darkMode: 'class' };</script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
 <link id="hljsTheme" rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css">
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
 <!-- Mermaid -->
@@ -1371,6 +1372,13 @@ function removeWelcome() { if (welcome && welcome.parentNode) welcome.remove(); 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+function renderMarkdown(text) {
+  const source = String(text || '');
+  if (window.marked && window.DOMPurify) {
+    return DOMPurify.sanitize(marked.parse(source));
+  }
+  return escapeHtml(source).replace(/\n/g, '<br>');
+}
 function pathBasename(p) { const i = p.lastIndexOf('/'); return i >= 0 ? p.slice(i+1) : p; }
 function normalizeToolNames(list) {
   return Array.from(new Set((Array.isArray(list) ? list : [])
@@ -1710,7 +1718,7 @@ function newAssistantBubble() {
 function addTextBlock(container, text) {
   const block = document.createElement('div');
   block.className = 'prose-custom bubble-asst relative group';
-  block.innerHTML = marked.parse(text)
+  block.innerHTML = renderMarkdown(text)
     + `<button data-copy="${encodeURIComponent(text)}" class="absolute top-2 right-2 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 opacity-0 group-hover:opacity-100" title="复制全文">📋</button>`;
   block.querySelectorAll('pre').forEach(pre => {
     const code = pre.textContent || '';
@@ -2787,7 +2795,7 @@ function handleStreamEvent(ev, container) {
       const text = block.text;
       const el = block.el;
       el.classList.remove('whitespace-pre-wrap', 'break-words');
-      el.innerHTML = marked.parse(text) +
+      el.innerHTML = renderMarkdown(text) +
         `<button data-copy="${encodeURIComponent(text)}" class="absolute top-2 right-2 text-xs text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 opacity-0 group-hover:opacity-100" title="复制全文">📋</button>`;
       el.querySelectorAll('pre').forEach(pre => {
         const code = pre.textContent || '';
