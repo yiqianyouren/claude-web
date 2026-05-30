@@ -5,6 +5,11 @@
       "version": "1.5.4",
       "date": "2026-05-30",
       "highlights": [
+        { "type": "feature", "text": "全新「配置中心」面板（⚙ 按钮）：一个入口管 Hooks / Skills / MCP / Permissions 四个 Tab，支持 user / project / local 三 scope 切换；未保存改动有红点，关闭/Esc/切 scope 会拦截确认；保存前自动 .bak 备份，敏感 env（如 ANTHROPIC_AUTH_TOKEN）前端脱敏" },
+        { "type": "feature", "text": "Hooks 可视化编辑：PreToolUse / PostToolUse / Stop 等事件下的 matcher / type / command / enabled 在表格里直接增删改" },
+        { "type": "feature", "text": "Skills 管理：扫描 ~/.claude/skills/*/SKILL.md，一键启停（文件级 SKILL.md ↔ SKILL.md.disabled）、可查看源码；英文 description 自动用 Haiku 翻成中文并本地缓存" },
+        { "type": "feature", "text": "Permissions 编辑：allow / deny 规则按行编辑直接落盘" },
+        { "type": "feature", "text": "Plan 审批卡片：Claude 调用 ExitPlanMode 时前端拦截并渲染成卡片，提供「✓ 批准并执行 / ✎ 编辑后批准 / ✕ 拒绝」三个动作；决定（含编辑后的 plan 文本）按 sessionId+toolId 持久化到 localStorage，刷新不丢；待审批时会停掉仍在跑的进程让用户决定" },
         { "type": "fix", "text": "配置中心 settings.json 并发写入加锁 + 原子替换，避免多个浏览器/标签同时保存时丢更新或写出半截 JSON" },
         { "type": "fix", "text": "project / local 范围保存时正确路由到对应 .claude 目录，不再静默落到当前进程工作目录；前端缺少工作目录时 toast 中止" },
         { "type": "fix", "text": "Skill 启用/禁用改为重命名 SKILL.md ↔ SKILL.md.disabled（Claude Code 按文件名扫描），原先写入 disabledSkills JSON 字段对 CLI 实际无效" },
