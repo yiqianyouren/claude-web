@@ -37,6 +37,7 @@ pip install claude-web-ui && claude-web
 - **Token 级流式输出**（打字机效果）
 - 多轮对话（基于 `claude --resume`）
 - 停止正在运行的任务
+- **活跃会话保温**：每个会话保留一个持久 claude 进程，后续轮次跳过冷启动和 MCP 握手（无 MCP 省 1-2s，重度 MCP 用户省 5-15s/轮）
 - **跟进建议**：回答后自动生成 3 个「你可能想继续问」的追问按钮
 - **会话分叉**：基于任意历史消息编辑 / 重新生成，原会话保留
 - **思考动画**：等待响应时用跳动圆点 + 扫光文字提示
@@ -338,6 +339,7 @@ claude-web/
 - [x] MCP Server 管理面板（多 scope 查看 / 启用 / 禁用 / 添加 / 删除 / 脱敏展示）
 - [x] **首次启动 5 步交互引导 + What's New 升级提醒 + 帮助面板（含完整更新日志）**
 - [x] **稳定性硬化：SQLite WAL / SSE 断开清理子进程 / stderr 并发 drain / JSONL 原子写 / SIGTERM+SIGKILL 兜底**
+- [x] **活跃会话保温（Warm Process Pool）：持久 claude 进程复用，后续轮次跳过冷启动和 MCP 握手，空闲 90s 自动回收**
 - [x] **启动检测 claude CLI、`--host` 非 localhost 警告、`uploads/` 自动清理 > 30 天文件**
 - [x] PyPI 发包（`pip install claude-web-ui`）
 

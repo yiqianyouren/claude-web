@@ -2,6 +2,12 @@
 
 所有重要变更按版本记录。应用内的 What's New 和帮助面板使用 `static/changelog.json`，这里是给 GitHub / Git diff 浏览的 Markdown 版本。
 
+## v1.5.5 - 2026-06-05
+
+- **FEATURE** 活跃会话保温（Warm Process Pool）：每个会话保留一个持久 `claude` 进程，后续每轮跳过进程启动和 MCP 握手开销；无 MCP 省 1-2s，重度 MCP 用户（3-5 个 server）省 5-15s/轮；空闲 90s 自动回收，内存稳定在单进程量级（约 344MB）
+- **FEATURE** 停止生成改用 `control_request interrupt` 信号而非 SIGTERM，进程不被销毁，下一条消息可立即复用保温进程；stdin 不可用时退回 SIGTERM；模型 / 权限策略 / cwd / 工具列表变更时透明重建进程
+- **FIX** 同会话快速连发时不再弹「错误: claude exited with code 143」假错误——旧进程被安静替换而非误报崩溃（进程身份独立追踪）
+
 ## v1.5.4 - 2026-05-30
 
 - **FEATURE** 全新「配置中心」面板（⚙ 按钮）：一个入口管 Hooks / Skills / MCP / Permissions 四个 Tab，支持 user / project / local 三 scope 切换，未保存改动有红点提示，关闭 / Esc / 切 scope 会拦截确认；保存前自动 `.bak` 备份，`ANTHROPIC_AUTH_TOKEN` 等敏感 env 在前端脱敏显示

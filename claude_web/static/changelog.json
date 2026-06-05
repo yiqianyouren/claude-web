@@ -2,6 +2,15 @@
   "$schema": "https://json.schemastore.org/changelog.json",
   "releases": [
     {
+      "version": "1.5.5",
+      "date": "2026-06-05",
+      "highlights": [
+        { "type": "feature", "text": "活跃会话保温：每个会话保留一个持久 claude 进程，后续每轮跳过冷启动和 MCP 握手（无 MCP 省 1-2s，重度 MCP 用户省 5-15s/轮）；空闲 90s 后自动回收" },
+        { "type": "feature", "text": "停止生成改用 interrupt 信号而非 SIGTERM，进程不被销毁，下一条消息可立即复用；模型 / 权限 / cwd 变更时透明重建进程" },
+        { "type": "fix", "text": "同会话快速连发时不再弹「错误: claude exited with code 143」假错误（旧进程被安静替换而非误报为崩溃）" }
+      ]
+    },
+    {
       "version": "1.5.4",
       "date": "2026-05-30",
       "highlights": [
