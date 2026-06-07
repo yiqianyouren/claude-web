@@ -3,6 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/claude-web-ui.svg)](https://pypi.org/project/claude-web-ui/)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
+[![CSDN Blog](https://img.shields.io/badge/博客-CSDN-red.svg)](https://blog.csdn.net/qq_39313596?type=blog)
 
 一个给 [Claude Code](https://docs.claude.com/claude-code) CLI 加可视化界面的 Web 应用。后端用 FastAPI 包装 `claude -p --output-format stream-json`，前端通过 SSE 流式渲染对话、工具调用、思考过程。
 
@@ -370,6 +371,10 @@ claude-web/
 ## 🤝 贡献
 
 欢迎 Issue / PR。
+
+## 👨‍💻 作者
+
+**heng1234** · [CSDN 博客](https://blog.csdn.net/qq_39313596?type=blog)
 
 ## 📄 License
 
