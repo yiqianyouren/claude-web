@@ -9,6 +9,7 @@ import socket
 import sqlite3
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 import time
 import urllib.error
 import urllib.request
@@ -58,6 +59,7 @@ _terminated_processes: "Set[asyncio.subprocess.Process]" = set()
 _compacting_sessions: Set[str] = set()
 
 WARM_IDLE_TIMEOUT = 90.0  # seconds before an idle warm process is reaped
+MAX_WARM_PROCESSES = 4
 
 
 @dataclass
@@ -230,6 +232,32 @@ async def _warm_reaper() -> None:
             entry = _warm_processes.pop(sid, None)
             if entry:
                 await _terminate_process(entry.process)
+
+
+async def _discard_warm_session(session_id: str) -> None:
+    entry = _warm_processes.pop(session_id, None)
+    if entry is not None:
+        await _terminate_process(entry.process)
+
+
+async def _park_warm_session(session_id: str, entry: _WarmEntry) -> None:
+    previous = _warm_processes.get(session_id)
+    _warm_processes[session_id] = entry
+    if previous is not None and previous.process is not entry.process:
+        await _terminate_process(previous.process)
+
+    overflow = len(_warm_processes) - MAX_WARM_PROCESSES
+    if overflow <= 0:
+        return
+    victims = sorted(
+        _warm_processes.items(),
+        key=lambda item: item[1].last_used,
+    )[:overflow]
+    for sid, victim in victims:
+        if _warm_processes.get(sid) is not victim:
+            continue
+        _warm_processes.pop(sid, None)
+        await _terminate_process(victim.process)
 
 
 async def _shutdown_terminate_running_processes() -> None:
@@ -596,6 +624,50 @@ def record_usage(session_id: str, result_event: dict) -> None:
         )
 
 
+def replace_session_usage_rows_from_events(conn: sqlite3.Connection, session_id: str, events: List[dict]) -> None:
+    conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
+    turn_idx = 0
+    rows: List[tuple] = []
+    for event in events:
+        if event.get("type") != "result":
+            continue
+        usage = event.get("usage") or {}
+        if not isinstance(usage, dict):
+            continue
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        cache_create = int(usage.get("cache_creation_input_tokens") or 0)
+        cost = float(event.get("total_cost_usd") or 0)
+        duration_ms = float(event.get("duration_ms") or 0)
+        if input_tokens == 0 and output_tokens == 0 and cache_read == 0 and cache_create == 0 and cost == 0:
+            continue
+        turn_idx += 1
+        rows.append((
+            uuid.uuid4().hex,
+            session_id,
+            turn_idx,
+            input_tokens,
+            output_tokens,
+            cache_read,
+            cache_create,
+            cost,
+            duration_ms,
+            float(event.get("ts") or time.time()),
+        ))
+    if rows:
+        conn.executemany(
+            """
+            INSERT INTO session_usage (
+                id, session_id, turn_idx, input_tokens, output_tokens,
+                cache_read_input_tokens, cache_creation_input_tokens,
+                total_cost_usd, duration_ms, ts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
 def normalize_memory_scope(scope: Optional[str]) -> str:
     raw_scope = (scope or "global").strip() or "global"
     if raw_scope.startswith("project:"):
@@ -829,12 +901,19 @@ class RestoreRequest(BaseModel):
     event_index: int
 
 
+class CliSessionImportRequest(BaseModel):
+    session_ids: List[str]
+    cwd: Optional[str] = None
+    paths: Optional[List[str]] = None
+
+
 class FetchUrlRequest(BaseModel):
     url: str
     max_chars: Optional[int] = 10000
 
 
 def _proc_sig(
+    remote_session_id: str,
     model: Optional[str],
     permission_mode: Optional[str],
     system_prompt: Optional[str],
@@ -845,10 +924,12 @@ def _proc_sig(
     """Return a hashable signature that identifies process reusability.
 
     Two consecutive turns are served by the same warm process only when their
-    signatures match.  session_id / remote_session_id are intentionally absent:
-    once spawned, the process already knows its own session.
+    signatures match.  The remote session id is included because local session
+    operations such as /clear, /compact, and inline edit intentionally detach
+    from the previous Claude conversation.
     """
     return (
+        remote_session_id or "",
         model or "",
         permission_mode or "default",
         (system_prompt or "").strip(),
@@ -1096,6 +1177,423 @@ def derive_title(message: str) -> str:
     return fallback[:60] if fallback else "未命名会话"
 
 
+_CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+_CLI_SESSION_SCAN_LIMIT = 1000
+_CLI_SESSION_PREVIEW_CHARS = 1200
+
+
+def _parse_time_value(value) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 10_000_000_000:
+            ts = ts / 1000
+        return ts
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            return _parse_time_value(float(raw))
+        except ValueError:
+            pass
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            return datetime.fromisoformat(raw).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_event_ts(obj: dict, fallback: float) -> float:
+    for key in ("timestamp", "created_at", "createdAt", "ts"):
+        ts = _parse_time_value(obj.get(key))
+        if ts is not None:
+            return ts
+    message = obj.get("message")
+    if isinstance(message, dict):
+        for key in ("timestamp", "created_at", "createdAt", "ts"):
+            ts = _parse_time_value(message.get(key))
+            if ts is not None:
+                return ts
+    return fallback
+
+
+def _stringify_cli_content(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type in ("text", "input_text"):
+                    parts.append(str(block.get("text") or ""))
+                elif block_type == "tool_result":
+                    val = block.get("content")
+                    text = _stringify_cli_content(val)
+                    if text:
+                        parts.append(text)
+                elif "text" in block:
+                    parts.append(str(block.get("text") or ""))
+        return "\n".join(p for p in parts if p)
+    if isinstance(content, dict):
+        if "text" in content:
+            return str(content.get("text") or "")
+        if "content" in content:
+            return _stringify_cli_content(content.get("content"))
+    return str(content)
+
+
+def _extract_cli_message(obj: dict) -> dict:
+    message = obj.get("message")
+    return message if isinstance(message, dict) else obj
+
+
+def _extract_cli_session_id(obj: dict, path: Path) -> str:
+    for key in ("session_id", "sessionId", "sessionID"):
+        val = obj.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    message = obj.get("message")
+    if isinstance(message, dict):
+        for key in ("session_id", "sessionId", "sessionID"):
+            val = message.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return path.stem
+
+
+def _decode_claude_project_path(encoded: str) -> str:
+    if not encoded:
+        return ""
+    # Claude Code project dirs are commonly absolute paths with slashes replaced
+    # by hyphens, e.g. "-Users-name-project". Keep unknown formats readable.
+    if encoded.startswith("-"):
+        return encoded.replace("-", os.sep)
+    return encoded
+
+
+def _extract_cli_cwd(obj: dict, path: Path) -> str:
+    candidates = [
+        obj.get("cwd"),
+        obj.get("project_path"),
+        obj.get("projectPath"),
+        obj.get("workspace"),
+    ]
+    message = obj.get("message")
+    if isinstance(message, dict):
+        candidates.extend([message.get("cwd"), message.get("project_path"), message.get("projectPath")])
+    for val in candidates:
+        if isinstance(val, str) and val.strip():
+            return os.path.expanduser(val.strip())
+    try:
+        return _decode_claude_project_path(path.parent.name)
+    except Exception:
+        return ""
+
+
+def _normalize_cli_user_event(obj: dict, fallback_ts: float) -> Optional[dict]:
+    message = _extract_cli_message(obj)
+    content = message.get("content")
+    if isinstance(content, list) and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+        event = dict(obj)
+        event["type"] = "user"
+        event["message"] = dict(message)
+        event["ts"] = _extract_event_ts(obj, fallback_ts)
+        event["imported_from"] = "claude_cli"
+        return event
+    text = _stringify_cli_content(content).strip()
+    if not text:
+        text = _stringify_cli_content(obj.get("content")).strip()
+    if not text:
+        return None
+    event = {
+        "type": "user_input",
+        "text": text,
+        "images": [],
+        "docs": [],
+        "ts": _extract_event_ts(obj, fallback_ts),
+        "imported_from": "claude_cli",
+    }
+    return event
+
+
+def _normalize_cli_assistant_event(obj: dict, fallback_ts: float) -> Optional[dict]:
+    message = _extract_cli_message(obj)
+    content = message.get("content")
+    if isinstance(content, str):
+        content = [{"type": "text", "text": content}]
+    elif not isinstance(content, list):
+        content_text = _stringify_cli_content(content).strip()
+        content = [{"type": "text", "text": content_text}] if content_text else []
+    if not content:
+        return None
+    event = dict(obj)
+    event["type"] = "assistant"
+    event["message"] = dict(message)
+    event["message"]["content"] = content
+    event["ts"] = _extract_event_ts(obj, fallback_ts)
+    event["imported_from"] = "claude_cli"
+    return event
+
+
+def _normalize_cli_event(obj: dict, fallback_ts: float) -> Optional[dict]:
+    event_type = obj.get("type")
+    if event_type == "user":
+        return _normalize_cli_user_event(obj, fallback_ts)
+    if event_type == "assistant":
+        return _normalize_cli_assistant_event(obj, fallback_ts)
+    if event_type in ("system", "result", "error", "raw"):
+        event = dict(obj)
+        event["ts"] = _extract_event_ts(obj, fallback_ts)
+        event["imported_from"] = "claude_cli"
+        return event
+    return None
+
+
+def _read_cli_session_file(path: Path, preview_only: bool = False) -> Optional[dict]:
+    stat = path.stat()
+    fallback_ts = stat.st_mtime
+    raw_events: List[dict] = []
+    event_count = 0
+    session_id = path.stem
+    cwd = ""
+    title = ""
+    message_count = 0
+    first_ts: Optional[float] = None
+    updated_at = fallback_ts
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                session_id = _extract_cli_session_id(obj, path) or session_id
+                if not cwd:
+                    cwd = _extract_cli_cwd(obj, path)
+                ts = _extract_event_ts(obj, fallback_ts)
+                first_ts = ts if first_ts is None else min(first_ts, ts)
+                updated_at = max(updated_at, ts)
+                normalized = _normalize_cli_event(obj, ts)
+                if normalized is None:
+                    continue
+                event_count += 1
+                if not preview_only:
+                    raw_events.append(normalized)
+                if normalized.get("type") in ("user_input", "assistant"):
+                    message_count += 1
+                if not title and normalized.get("type") == "user_input":
+                    text = (normalized.get("text") or "").strip()
+                    # Skip hook-injected system content (local-command-caveat, system-reminder, etc.)
+                    if text and not text.startswith("<") and not text.startswith("["):
+                        title = derive_title(text[:_CLI_SESSION_PREVIEW_CHARS])
+    except OSError:
+        return None
+
+    if event_count == 0:
+        return None
+    if not cwd:
+        cwd = _decode_claude_project_path(path.parent.name)
+    title = title or "CLI 会话 " + session_id[:8]
+    item = {
+        "session_id": session_id,
+        "cwd": cwd,
+        "title": title,
+        "created_at": first_ts or fallback_ts,
+        "updated_at": updated_at,
+        "message_count": message_count,
+        "event_count": event_count,
+        "path": str(path),
+        "events": [] if preview_only else raw_events,
+    }
+    return item
+
+
+def _iter_cli_session_paths() -> Iterator[Path]:
+    if not _CLAUDE_PROJECTS_DIR.exists() or not _CLAUDE_PROJECTS_DIR.is_dir():
+        return
+    for path in _CLAUDE_PROJECTS_DIR.glob("*/*.jsonl"):
+        if path.is_file():
+            yield path
+
+
+def _path_matches_cwd(path_value: str, cwd_filter: str) -> bool:
+    if not cwd_filter:
+        return True
+    try:
+        path_a = Path(os.path.expanduser(path_value)).resolve()
+        path_b = Path(os.path.expanduser(cwd_filter)).resolve()
+        return path_a == path_b
+    except (OSError, ValueError):
+        return path_value == cwd_filter
+
+
+def scan_cli_sessions(cwd_filter: str = "") -> List[dict]:
+    imported_remote_ids: Set[str] = set()
+    with db_connect() as conn:
+        rows = conn.execute("SELECT id, remote_session_id FROM sessions").fetchall()
+    for row in rows:
+        imported_remote_ids.add(row["id"])
+        if row["remote_session_id"]:
+            imported_remote_ids.add(row["remote_session_id"])
+
+    items: List[dict] = []
+    paths = sorted(_iter_cli_session_paths(), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in paths[:_CLI_SESSION_SCAN_LIMIT]:
+        item = _read_cli_session_file(path, preview_only=True)
+        if item is None:
+            continue
+        if cwd_filter and not _path_matches_cwd(item.get("cwd") or "", cwd_filter):
+            continue
+        item["already_imported"] = item["session_id"] in imported_remote_ids
+        item.pop("events", None)
+        items.append(item)
+    return items
+
+
+def _session_id_exists(session_id: str) -> bool:
+    with db_connect() as conn:
+        row = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    return row is not None
+
+
+def _find_existing_import(remote_session_id: str) -> Optional[str]:
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM sessions
+            WHERE id = ? OR remote_session_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (remote_session_id, remote_session_id),
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def _choose_import_session_id(remote_session_id: str) -> str:
+    if remote_session_id and not _session_id_exists(remote_session_id):
+        return remote_session_id
+    return str(uuid.uuid4())
+
+
+def import_cli_sessions(session_ids: List[str], cwd_filter: str = "", paths: Optional[List[str]] = None) -> dict:
+    requested = {sid.strip() for sid in session_ids if sid and sid.strip()}
+    if not requested:
+        raise HTTPException(status_code=400, detail="session_ids required")
+
+    by_id: Dict[str, Path] = {}
+    allowed_root = _CLAUDE_PROJECTS_DIR.resolve()
+    for raw_path in paths or []:
+        try:
+            path = Path(raw_path).resolve()
+            path.relative_to(allowed_root)
+        except (OSError, ValueError):
+            continue
+        if not path.is_file() or path.suffix != ".jsonl":
+            continue
+        if path.stem in requested:
+            by_id[path.stem] = path
+            continue
+        preview = _read_cli_session_file(path, preview_only=True)
+        if preview and preview["session_id"] in requested:
+            by_id[preview["session_id"]] = path
+
+    for path in _iter_cli_session_paths():
+        if requested.issubset(set(by_id.keys())):
+            break
+        if path.stem in requested:
+            by_id[path.stem] = path
+            continue
+        preview = _read_cli_session_file(path, preview_only=True)
+        if preview and preview["session_id"] in requested:
+            by_id[preview["session_id"]] = path
+
+    imported: List[dict] = []
+    for remote_session_id in requested:
+        path = by_id.get(remote_session_id)
+        if path is None:
+            continue
+        parsed = _read_cli_session_file(path, preview_only=False)
+        if parsed is None:
+            continue
+        if cwd_filter and not _path_matches_cwd(parsed.get("cwd") or "", cwd_filter):
+            continue
+        existing_local_id = _find_existing_import(parsed["session_id"])
+        local_id = existing_local_id or _choose_import_session_id(parsed["session_id"])
+        now = time.time()
+        events = parsed["events"]
+        save_events(local_id, events)
+        with db_connect() as conn:
+            existing = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (local_id,)).fetchone()
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, title, cwd, created_at, updated_at,
+                        remote_session_id, remote_ready, summary_cache, tags
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        local_id,
+                        parsed["title"],
+                        parsed["cwd"],
+                        parsed["created_at"],
+                        parsed["updated_at"],
+                        parsed["session_id"],
+                        summarize_cache_from_events(events),
+                        "imported-cli",
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE sessions
+                    SET title = ?, cwd = ?, updated_at = ?, remote_session_id = ?,
+                        remote_ready = 1, summary_cache = ?, tags = CASE
+                            WHEN tags = '' THEN 'imported-cli'
+                            WHEN instr(',' || tags || ',', ',imported-cli,') > 0 THEN tags
+                            ELSE tags || ',imported-cli'
+                        END
+                    WHERE id = ?
+                    """,
+                    (
+                        parsed["title"],
+                        parsed["cwd"],
+                        max(parsed["updated_at"], now),
+                        parsed["session_id"],
+                        summarize_cache_from_events(events),
+                        local_id,
+                    ),
+                )
+            replace_session_usage_rows_from_events(conn, local_id, events)
+        imported.append({
+            "id": local_id,
+            "remote_session_id": parsed["session_id"],
+            "title": parsed["title"],
+            "cwd": parsed["cwd"],
+            "event_count": len(events),
+            "already_imported": existing_local_id is not None,
+        })
+
+    missing = sorted(requested - {item["remote_session_id"] for item in imported})
+    return {"imported": imported, "missing": missing}
+
+
 def session_has_remote_conversation(events: List[dict]) -> bool:
     for ev in events:
         event_type = ev.get("type")
@@ -1111,12 +1609,13 @@ def session_has_remote_conversation(events: List[dict]) -> bool:
 
 
 def resolve_remote_session_state(session_id: str, row: Optional[sqlite3.Row], events: List[dict]):
+    has_remote_events = session_has_remote_conversation(events)
     if row is None:
-        return session_id, session_has_remote_conversation(events)
+        return session_id, has_remote_events
     remote_session_id = (row["remote_session_id"] or "").strip() or session_id
     if (row["remote_session_id"] or "").strip():
-        return remote_session_id, bool(row["remote_ready"])
-    return remote_session_id, session_has_remote_conversation(events)
+        return remote_session_id, bool(row["remote_ready"]) or has_remote_events
+    return remote_session_id, has_remote_events
 
 
 def set_session_remote_state(session_id: str, remote_session_id: str, remote_ready: bool) -> None:
@@ -1215,6 +1714,7 @@ async def chat(req: ChatRequest):
             req.system_prompt,
         )
         current_sig = _proc_sig(
+            remote_session_id,
             req.model, req.permission_mode, effective_system_prompt,
             work_dir, req.allowed_tools, req.disallowed_tools,
         )
@@ -1316,9 +1816,16 @@ async def chat(req: ChatRequest):
                     obj = {"type": "raw", "text": line}
                 t = obj.get("type")
 
-                # --replay-user-messages echoes our stdin message back; skip it.
-                # control_response is the interrupt acknowledgement; also skip.
-                if t in ("user", "control_response"):
+                # --replay-user-messages echoes our stdin message back as a
+                # plain user event. Keep tool_result user events; the UI and
+                # export path rely on them to show tool outputs.
+                content = (obj.get("message") or {}).get("content") or []
+                is_tool_result_event = (
+                    t == "user"
+                    and isinstance(content, list)
+                    and any(isinstance(block, dict) and block.get("type") == "tool_result" for block in content)
+                )
+                if (t == "user" and not is_tool_result_event) or t == "control_response":
                     continue
 
                 if session_has_remote_conversation([obj]):
@@ -1329,7 +1836,7 @@ async def chat(req: ChatRequest):
                         record_usage(session_id, obj)
                 yield f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
-                if t == "result":
+                if t == "result" and not obj.get("parent_tool_use_id"):
                     # Turn complete.  Persistent process stays alive; stop reading
                     # so the OS pipe buffer can accumulate the next turn's init event.
                     turn_ended = True
@@ -1368,11 +1875,14 @@ async def chat(req: ChatRequest):
                 and session_id not in _stopped_sessions
             )
             if should_park:
-                _warm_processes[session_id] = _WarmEntry(
-                    process=process,
-                    signature=current_sig,
-                    last_used=time.monotonic(),
-                    write_lock=write_lock,
+                await _park_warm_session(
+                    session_id,
+                    _WarmEntry(
+                        process=process,
+                        signature=current_sig,
+                        last_used=time.monotonic(),
+                        write_lock=write_lock,
+                    ),
                 )
             else:
                 await _terminate_process(process)
@@ -1497,6 +2007,7 @@ async def prepare_inline_edit(session_id: str, req: ForkRequest):
         row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
     cwd = row["cwd"] if row else os.path.expanduser("~")
 
+    await _discard_warm_session(session_id)
     save_events(session_id, events_before)
     upsert_session(session_id, derive_title(new_text), cwd)
     set_session_remote_state(session_id, str(uuid.uuid4()), False)
@@ -2077,6 +2588,20 @@ async def search_sessions(q: str = Query(default=""), limit: int = Query(default
     return [dict(r) for r in rows]
 
 
+@app.get("/api/cli-sessions/scan")
+async def scan_cli_sessions_api(cwd: str = Query(default="")):
+    return {
+        "root": str(_CLAUDE_PROJECTS_DIR),
+        "exists": _CLAUDE_PROJECTS_DIR.exists(),
+        "sessions": scan_cli_sessions(cwd),
+    }
+
+
+@app.post("/api/cli-sessions/import")
+async def import_cli_sessions_api(req: CliSessionImportRequest):
+    return import_cli_sessions(req.session_ids, req.cwd or "", req.paths)
+
+
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     with db_connect() as conn:
@@ -2123,6 +2648,7 @@ async def patch_session(session_id: str, req: SessionPatch):
 async def delete_session(session_id: str):
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
+    await _discard_warm_session(session_id)
     with db_connect() as conn:
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
@@ -2140,6 +2666,7 @@ async def delete_session(session_id: str):
 async def clear_session(session_id: str):
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
+    await _discard_warm_session(session_id)
     save_events(session_id, [])
     with db_connect() as conn:
         conn.execute("UPDATE sessions SET title = '新会话', manual_title = 0, updated_at = ? WHERE id = ?", (time.time(), session_id))
@@ -2186,6 +2713,7 @@ async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=
         if not summary:
             raise HTTPException(status_code=500, detail="empty summary")
 
+        await _discard_warm_session(session_id)
         src = HISTORY_DIR / f"{session_id}.jsonl"
         backup_name = ""
         if src.exists():
