@@ -1158,6 +1158,7 @@
   <div class="px-3 pt-3 pb-1 flex items-center gap-3 text-[11px] uppercase tracking-wider" style="color:var(--text-subtle); font-weight:600;">
     <button id="viewActive" class="tab-btn transition-colors" style="color:var(--text);">活跃</button>
     <button id="viewArchived" class="tab-btn transition-colors" style="color:var(--text-subtle);">归档</button>
+    <button id="viewCli" class="tab-btn transition-colors" style="color:var(--text-subtle);">CLI</button>
   </div>
   <div id="tagFilter" class="px-3 text-xs hidden"></div>
 
@@ -1380,6 +1381,35 @@
           </select>
           <button id="addMemoryBtn" type="button" class="px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm">保存记忆</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- CLI session import modal -->
+<div id="cliImportModal" class="modal-backdrop hidden">
+  <div class="modal-box lg p-5" style="max-width:760px;">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <div class="text-lg font-semibold">导入 CLI 会话</div>
+        <div id="cliImportRoot" class="text-xs mt-1" style="color:var(--text-muted);"></div>
+      </div>
+      <button data-close class="text-xl">×</button>
+    </div>
+    <div class="flex items-center gap-2 mb-3">
+      <label class="inline-flex items-center gap-2 text-xs" style="color:var(--text-muted);">
+        <input id="cliImportCurrentOnly" type="checkbox" checked />
+        只看当前工作目录
+      </label>
+      <button id="cliImportRefresh" class="px-2.5 py-1.5 text-xs rounded" style="background:var(--surface-2); border:1px solid var(--border);">刷新</button>
+      <div id="cliImportStatus" class="text-xs ml-auto" style="color:var(--text-subtle);"></div>
+    </div>
+    <div id="cliImportList" class="space-y-2 max-h-[52vh] overflow-y-auto scrollbar-thin"></div>
+    <div class="mt-4 flex items-center justify-between">
+      <button id="cliImportSelectAll" class="px-3 py-1.5 text-sm rounded" style="background:var(--surface-2); border:1px solid var(--border);">全选未导入</button>
+      <div class="flex items-center gap-2">
+        <button id="cliImportCancel" class="px-3 py-1.5 text-sm rounded" style="background:var(--surface-2); border:1px solid var(--border);">取消</button>
+        <button id="cliImportSubmit" class="px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white rounded text-sm">导入选中</button>
       </div>
     </div>
   </div>
@@ -1678,6 +1708,7 @@ const activeDocUploadPromises = new Set();
 let pendingImageGeneration = 0;
 let currentController = null;
 let archivedView = false;
+let cliView = false;
 let activeTagFilter = null;
 let dailyChart = null, toolsChart = null;
 
@@ -1746,6 +1777,15 @@ const clearTools = $('clearTools');
 const exportBtn = $('exportBtn');
 const themeBtn = $('themeBtn');
 const settingsBtn = $('settingsBtn'), settingsModal = $('settingsModal');
+const cliImportModal = $('cliImportModal');
+const cliImportRoot = $('cliImportRoot');
+const cliImportCurrentOnly = $('cliImportCurrentOnly');
+const cliImportRefresh = $('cliImportRefresh');
+const cliImportStatus = $('cliImportStatus');
+const cliImportList = $('cliImportList');
+const cliImportSelectAll = $('cliImportSelectAll');
+const cliImportCancel = $('cliImportCancel');
+const cliImportSubmit = $('cliImportSubmit');
 const systemPromptInput = $('systemPromptInput');
 const toolUseOpenEl = $('toolUseOpen'), toolResultOpenEl = $('toolResultOpen');
 const notifyEnabledEl = $('notifyEnabled'), soundEnabledEl = $('soundEnabled');
@@ -4995,8 +5035,9 @@ searchInput.addEventListener('input', () => {
   searchTimer = setTimeout(() => refreshSessions(), 300);
 });
 
-viewActiveBtn.addEventListener('click', () => { archivedView = false; updateViewTabs(); refreshSessions(); });
-viewArchivedBtn.addEventListener('click', () => { archivedView = true; updateViewTabs(); refreshSessions(); });
+viewActiveBtn.addEventListener('click', () => { archivedView = false; cliView = false; updateViewTabs(); refreshSessions(); });
+viewArchivedBtn.addEventListener('click', () => { archivedView = true; cliView = false; updateViewTabs(); refreshSessions(); });
+viewCliBtn.addEventListener('click', () => { cliView = true; archivedView = false; updateViewTabs(); renderCliSessionList(); });
 
 function updateViewTabs() {
   updateTabStyles();
@@ -5292,6 +5333,125 @@ settingsBtn.addEventListener('click', () => {
   refreshMemories();
   openModal(settingsModal);
 });
+
+// ===== CLI session import =====
+let cliImportItems = [];
+let cliImportLoading = false;
+
+function currentImportCwd() {
+  return cliImportCurrentOnly && cliImportCurrentOnly.checked ? (cwdInput.value.trim() || '') : '';
+}
+
+function renderCliImportList() {
+  if (!cliImportList) return;
+  if (cliImportLoading) {
+    cliImportList.innerHTML = '<div class="text-xs text-center py-8" style="color:var(--text-subtle);">正在扫描 CLI 会话...</div>';
+    return;
+  }
+  if (!cliImportItems.length) {
+    cliImportList.innerHTML = '<div class="text-xs text-center py-8" style="color:var(--text-subtle);">没有找到可显示的 CLI 会话</div>';
+    return;
+  }
+  cliImportList.innerHTML = cliImportItems.map(item => `
+    <label class="block rounded-lg p-3" style="border:1px solid var(--border); background:var(--surface);">
+      <div class="flex items-start gap-3">
+        <input type="checkbox" data-cli-session="${escapeHtml(item.session_id)}" ${item.already_imported ? 'disabled' : ''} class="mt-1" />
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="text-sm font-medium truncate">${escapeHtml(item.title || item.session_id)}</div>
+            ${item.already_imported ? '<span class="text-[10px] px-1.5 py-0.5 rounded" style="background:var(--accent-soft); color:var(--accent);">已导入</span>' : ''}
+          </div>
+          <div class="text-xs mt-1 truncate" style="color:var(--text-muted);" title="${escapeHtml(item.cwd || '')}">${escapeHtml(item.cwd || '未知工作目录')}</div>
+          <div class="text-xs mt-1 flex flex-wrap gap-2" style="color:var(--text-subtle);">
+            <span>${formatTime(item.updated_at)}</span>
+            <span>${item.message_count || 0} 条消息</span>
+            <span>${escapeHtml((item.session_id || '').slice(0, 8))}</span>
+          </div>
+        </div>
+      </div>
+    </label>
+  `).join('');
+}
+
+async function scanCliSessions() {
+  if (!cliImportModal) return;
+  cliImportLoading = true;
+  if (cliImportSubmit) cliImportSubmit.disabled = true;
+  if (cliImportStatus) cliImportStatus.textContent = '';
+  renderCliImportList();
+  try {
+    const params = new URLSearchParams();
+    const cwd = currentImportCwd();
+    if (cwd) params.set('cwd', cwd);
+    const r = await fetch('/api/cli-sessions/scan?' + params.toString());
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.status);
+    cliImportItems = data.sessions || [];
+    if (cliImportRoot) cliImportRoot.textContent = `扫描目录：${data.root || '~/.claude/projects/'}`;
+    if (cliImportStatus) {
+      const available = cliImportItems.filter(x => !x.already_imported).length;
+      cliImportStatus.textContent = `${cliImportItems.length} 个会话 · ${available} 个可导入`;
+    }
+  } catch (e) {
+    cliImportItems = [];
+    if (cliImportStatus) cliImportStatus.textContent = '扫描失败';
+    cliImportList.innerHTML = `<div class="text-xs text-red-500 text-center py-8">扫描失败：${escapeHtml(e.message || e)}</div>`;
+    return;
+  } finally {
+    cliImportLoading = false;
+    if (cliImportSubmit) cliImportSubmit.disabled = false;
+  }
+  renderCliImportList();
+}
+
+function selectedCliSessionIds() {
+  return Array.from(cliImportList.querySelectorAll('input[data-cli-session]:checked'))
+    .map(el => el.dataset.cliSession)
+    .filter(Boolean);
+}
+
+function selectedCliSessionPaths() {
+  const selected = new Set(selectedCliSessionIds());
+  return cliImportItems
+    .filter(item => selected.has(item.session_id) && item.path)
+    .map(item => item.path);
+}
+
+async function importSelectedCliSessions() {
+  const ids = selectedCliSessionIds();
+  if (!ids.length) { toast('请选择要导入的 CLI 会话'); return; }
+  cliImportSubmit.disabled = true;
+  cliImportStatus.textContent = '正在导入...';
+  try {
+    const r = await fetch('/api/cli-sessions/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_ids: ids, paths: selectedCliSessionPaths(), cwd: currentImportCwd() }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.status);
+    const imported = data.imported || [];
+    toast(`已导入 ${imported.length} 个 CLI 会话`);
+    closeModal(cliImportModal);
+    await refreshSessions();
+    refreshStats();
+    refreshTags();
+    if (imported[0] && imported[0].id) await loadSession(imported[0].id);
+  } catch (e) {
+    cliImportStatus.textContent = '导入失败';
+    alert('导入失败: ' + (e.message || e));
+  } finally {
+    cliImportSubmit.disabled = false;
+  }
+}
+
+if (cliImportRefresh) cliImportRefresh.addEventListener('click', () => scanCliSessions());
+if (cliImportCurrentOnly) cliImportCurrentOnly.addEventListener('change', () => scanCliSessions());
+if (cliImportCancel) cliImportCancel.addEventListener('click', () => closeModal(cliImportModal));
+if (cliImportSelectAll) cliImportSelectAll.addEventListener('click', () => {
+  cliImportList.querySelectorAll('input[data-cli-session]:not(:disabled)').forEach(el => { el.checked = true; });
+});
+if (cliImportSubmit) cliImportSubmit.addEventListener('click', () => importSelectedCliSessions());
 
 systemPromptInput.addEventListener('change', () => { settings.systemPrompt = systemPromptInput.value; LS.set('systemPrompt', settings.systemPrompt); });
 toolUseOpenEl.addEventListener('change', () => { settings.toolUseOpen = toolUseOpenEl.checked; LS.set('toolUseOpen', settings.toolUseOpen); });
@@ -6060,12 +6220,60 @@ document.querySelectorAll('.empty-card').forEach(card => {
 });
 
 // ===== sidebar tab styling =====
+const viewCliBtn = $('viewCli');
 function updateTabStyles() {
-  [viewActiveBtn, viewArchivedBtn].forEach(b => {
-    b.style.color = 'var(--text-subtle)';
+  [viewActiveBtn, viewArchivedBtn, viewCliBtn].forEach(b => {
+    if (b) b.style.color = 'var(--text-subtle)';
   });
-  const activeBtn = archivedView ? viewArchivedBtn : viewActiveBtn;
-  activeBtn.style.color = 'var(--text)';
+  const activeBtn = cliView ? viewCliBtn : (archivedView ? viewArchivedBtn : viewActiveBtn);
+  if (activeBtn) activeBtn.style.color = 'var(--text)';
+}
+
+// ===== CLI session list (sidebar) =====
+async function renderCliSessionList() {
+  sessionList.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">加载中...</div>';
+  try {
+    const data = await fetch('/api/cli-sessions/scan').then(r => r.json());
+    const sessions = data.sessions || [];
+    if (!sessions.length) {
+      sessionList.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">未找到 CLI 会话</div>';
+      return;
+    }
+    sessionList.innerHTML = sessions.map(s => {
+      const alreadyImported = s.already_imported;
+      const date = s.updated_at ? new Date(s.updated_at * 1000).toLocaleDateString('zh-CN', {month:'numeric',day:'numeric'}) : '';
+      const preview = (s.summary || s.first_message || '').slice(0, 40);
+      return `<div class="px-2 py-1.5 group" data-cli-id="${s.session_id}">
+        <div class="flex items-start justify-between gap-1 rounded-lg px-2 py-2 cursor-default" style="background:var(--surface);">
+          <div class="flex-1 min-w-0">
+            <div class="text-[13px] truncate" style="color:var(--text);">${preview || s.session_id.slice(0,8)}</div>
+            <div class="text-[11px] mt-0.5" style="color:var(--text-subtle);">${date}${s.cwd ? ' · ' + s.cwd.split('/').pop() : ''}</div>
+          </div>
+          <button class="cli-import-one shrink-0 text-[11px] px-2 py-0.5 rounded transition-colors" data-sid="${s.session_id}"
+            style="background:${alreadyImported ? 'transparent' : 'var(--accent,#f97316)'}; color:${alreadyImported ? 'var(--text-subtle)' : '#fff'}; border:1px solid ${alreadyImported ? 'var(--border)' : 'transparent'};"
+            ${alreadyImported ? '' : ''}>
+            ${alreadyImported ? '已导入' : '导入'}
+          </button>
+        </div>
+      </div>`;
+    }).join('');
+    sessionList.querySelectorAll('.cli-import-one').forEach(btn => {
+      if (btn.textContent.trim() === '已导入') return;
+      btn.addEventListener('click', async () => {
+        btn.disabled = true; btn.textContent = '导入中…';
+        try {
+          await fetch('/api/cli-sessions/import', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({session_ids:[btn.dataset.sid]}) });
+          btn.textContent = '已导入';
+          btn.style.background = 'transparent';
+          btn.style.color = 'var(--text-subtle)';
+          btn.style.border = '1px solid var(--border)';
+          refreshSessions();
+        } catch(e) { btn.disabled = false; btn.textContent = '导入'; alert('导入失败'); }
+      });
+    });
+  } catch(e) {
+    sessionList.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">加载失败</div>';
+  }
 }
 
 // ===== MCP management =====
