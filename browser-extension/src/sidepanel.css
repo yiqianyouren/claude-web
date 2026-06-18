@@ -219,6 +219,17 @@ button:disabled {
   margin-top: 18px;
 }
 
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.empty-actions button {
+  margin-top: 0;
+}
+
 .work {
   min-height: calc(100vh - 59px);
   display: flex;

@@ -8,8 +8,13 @@
 - **FEATURE** Prompt 优化器支持从当前会话、手动粘贴、好评 / 收藏候选加入黄金样本；按任务类型自动分类，沉淀个人 Prompt 规则，展示规则置信度、来源样本数、相似成功样本和本地隐私提示
 - **FEATURE** 新增 Chrome MV3「选中即问」插件：网页选中文本或代码后右键让 Claude 解释、审查、改写或生成测试，结果在 Chrome Side Panel 流式展示
 - **FEATURE** 插件可一键转入完整 Claude Web 会话；Web 设置页支持生成插件 Token、显示插件目录、下载 ZIP，命令行新增 `claude-web --extension-path` / `claude-web-extension-path`
+- **FEATURE** 新增 Agent Loop 自主工作模式：给定目标、轮数和 token 预算后，Claude 会自动连续执行、测试、修复，直到输出完成标记、阻塞、停止或预算用完，并可在结束时触发浏览器通知
+- **FEATURE** Chrome 插件升级为当前页面上下文助手：点击插件图标直接打开 Side Panel，点「读取当前页」即可把整页可见正文带给 Claude；右键选中内容提问仍保留
+- **FEATURE** 长会话新增里程碑标记：用户消息和回答都可点 ⭐，左侧「标记」Tab 只看关键轮次并一键滚动回原消息
 - **FEATURE** 侧栏新增「CLI」Tab，与活跃 / 归档并列展示 Claude Code CLI 历史；导入列表标题优先使用真实用户消息，跳过 hook 注入内容
 - **FEATURE** 回答反馈升级为好评 / 差评 / 收藏 / 原因 / 备注，并在统计面板展示反馈汇总；Prompt 优化器会复用好评和收藏作为黄金样本候选
+- **FIX** Agent Loop 遇到 HTTP、SSE 或权限错误会停止循环，循环期间会拦截手动发送，避免失败后继续空转
+- **FIX** 插件读取当前页时若页面读取权限未生效，会提示重新加载扩展，不再显示 `executeScript` TypeError
 - **FIX** 修复 CLI 会话视图按钮初始化顺序导致列表加载中断的问题
 
 ## v1.5.5 - 2026-06-05

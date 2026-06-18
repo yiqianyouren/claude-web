@@ -24,7 +24,7 @@ pip install claude-web-ui && claude-web
 ![流式 + 工具](screenshots/stream.png)
 
 ### Chrome MV3「选中即问」插件
-网页选中文本或代码后右键让 Claude 解释、审查、改写或生成测试，结果在 Chrome Side Panel 流式展示。
+点击插件图标即可打开 Chrome Side Panel；可读取当前页面全文，也可在网页选中文本或代码后右键让 Claude 解释、审查、改写或生成测试。
 ![Chrome 选中即问插件](screenshots/diff.png)
 
 ### 使用统计面板
@@ -40,13 +40,14 @@ pip install claude-web-ui && claude-web
 - 多轮对话（基于 `claude --resume`）
 - 停止正在运行的任务
 - **活跃会话保温**：每个会话保留一个持久 claude 进程，后续轮次跳过冷启动和 MCP 握手（无 MCP 省 1-2s，重度 MCP 用户省 5-15s/轮）
+- **Agent Loop 自主工作模式**：给 Claude 一个目标、轮数和 token 预算，它会自动执行、测试、修复，直到完成、阻塞、停止或预算用完
 - **跟进建议**：回答后自动生成 3 个「你可能想继续问」的追问按钮
 - **会话分叉**：基于任意历史消息编辑 / 重新生成，原会话保留
 - **思考动画**：等待响应时用跳动圆点 + 扫光文字提示
 
 ### 📝 输入
 - 文本 + 图片（**文件选择 / 粘贴 / 拖拽**），同一图片不会重复上传
-- **Chrome 选中即问插件**：网页里选中代码/文字，右键让 Claude 解释、审查、改写或生成测试，结果直接显示在 Chrome Side Panel，并可一键转入完整 Web 会话
+- **Chrome 当前页面 / 选中即问插件**：点击扩展图标打开 Side Panel，点「读取当前页」把整页可见正文带给 Claude；也可右键选中代码/文字提问，并一键转入完整 Web 会话
 - 待发送图片缩略图**点击放大预览**，确认上传内容
 - **文档上传**：PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG 自动提取文本作为上下文
 - **URL 自动检测**：输入框里粘贴链接，发送时自动抓取网页正文
@@ -74,6 +75,7 @@ pip install claude-web-ui && claude-web
 
 ### 🗂 会话管理
 - 📌 置顶 / 📥 归档 / 🏷 标签
+- **里程碑标记**：用户消息和 Claude 回答都可点 ⭐，左侧「标记」Tab 只展示关键轮次并可一键滚动回原消息
 - **CLI 会话 Tab**：侧栏可直接切到「CLI」查看 `~/.claude/projects/` 历史，会话标题优先显示真实用户消息，跳过 hook 注入噪音
 - 🪄 AI 智能命名（让 Claude 给会话起标题）
 - 双击标题重命名
@@ -202,7 +204,19 @@ PORT=9000 python server.py
 
 直接在新浏览器标签页 / 窗口打开 `http://127.0.0.1:8765`，点「＋ 新会话」即可并行对话。每个标签页独立，互不干扰。
 
-### Chrome 插件：选中即问
+### Agent Loop 自主工作
+
+点击输入框工具栏的循环按钮打开 Agent Loop，填写目标、最多轮数、token 预算和可选测试命令。Claude 会按“执行 → 测试 → 修复 → 再验证”的节奏连续迭代，直到它在回复末尾输出 `AGENT_LOOP_DONE`、`AGENT_LOOP_BLOCKED`，或达到停止 / 预算 / 轮数上限。
+
+适合这类任务：
+
+- “实现这个小功能并跑相关测试”
+- “修复当前报错，直到检查通过”
+- “审查这组改动，能修的直接修，最后总结”
+
+运行期间输入框会显示状态条，可随时点「停止」。勾选浏览器通知后，完成、阻塞或达到预算时会弹系统通知。
+
+### Chrome 插件：当前页面 / 选中即问
 
 插件目前按 Chrome 开发者模式安装。`pip install claude-web-ui` 的用户不需要找源码仓库，Claude Web 设置页会直接显示插件目录，也可以下载 ZIP。
 
@@ -213,7 +227,8 @@ PORT=9000 python server.py
 5. 打开 Chrome `chrome://extensions`，开启「开发者模式」。
 6. 点击「加载已解压的扩展程序」，选择插件目录或 ZIP 解压后的目录。
 7. 打开插件设置页，填写服务地址、Token、默认工作目录和权限模式。
-8. 在任意网页选中代码/文字，右键 `Claude Code Web`，选择解释、审查、改写或生成测试。
+8. 点击浏览器工具栏的 `Claude Code Web` 图标打开 Side Panel，或在任意网页选中代码/文字后右键选择解释、审查、改写或生成测试。
+9. 在 Side Panel 里点「读取当前页」可把当前标签页的可见正文作为上下文，再输入问题发送。
 
 命令行也可以直接查看 pip 包里的插件目录：
 
@@ -225,13 +240,15 @@ claude-web-extension-path
 
 源码开发时，插件目录仍然是仓库根部的 `browser-extension/`。
 
-如果更新了插件代码，需要到 Chrome `chrome://extensions` 点一次「重新加载」，再刷新正在测试的网页。
+如果更新了插件代码，需要到 Chrome `chrome://extensions` 点一次「重新加载」，再刷新正在测试的网页。读取当前页依赖 Chrome 的 `scripting` 权限；如果提示页面读取权限未生效，通常重新加载扩展即可。
 
 插件默认在 Chrome Side Panel 里显示流式回答；需要长对话或查看历史时，点「在 Claude Web 中继续」会打开同一个会话。插件入口只支持 `default` / `plan` / `readonly` 三种权限模式，不会从插件侧启用 `bypassPermissions`。
 
 #### 常见问题
 
+- 点击图标没有打开侧栏：先确认 Chrome 支持 Side Panel，并到 `chrome://extensions` 重新加载插件。
 - 右键后没有反应：先到 `chrome://extensions` 重新加载插件，然后刷新当前网页再试。
+- 读取当前页失败：`chrome://`、Chrome Web Store 等受限页面无法读取；普通网页若提示权限未生效，重新加载扩展后再试。
 - 侧边栏提示未配置 Token：在 Claude Web 设置里重新生成 Token，粘贴到插件设置页并保存。
 - 测试连接失败：确认 `claude-web` 正在运行，插件服务地址和 Web 页面端口一致，例如 `http://127.0.0.1:8765`。
 - pip 用户找不到目录：在 Web 设置页复制「插件目录」，或者运行 `claude-web --extension-path`。
@@ -337,6 +354,7 @@ claude-web/
 | `/api/sessions/{id}/clear` | POST | 清空当前会话历史，保留本地 session id |
 | `/api/sessions/{id}/compact` | POST | 用 Haiku 压缩旧历史，备份原 JSONL 并重置远端会话缓存 |
 | `/api/sessions/{id}/export` | GET | 导出 Markdown |
+| `/api/sessions/{id}/milestones` | GET | 当前会话 ⭐ 里程碑标记列表 |
 | `/api/sessions/{id}/usage` | GET | 查看当前会话 token / 成本累计 |
 | `/api/sessions/{id}/mention` | GET | 把会话内容整理成可引用上下文 |
 | `/api/sessions/{id}/prepare-fork` | POST | 创建分叉会话 |
@@ -384,10 +402,12 @@ claude-web/
 - [x] 文档上传（PDF / DOCX / XLSX / XLS / CSV / TSV / TXT / MD / JSON / LOG）和 URL 自动抓取上下文
 - [x] 联网搜索开关、`@` 文件 / 会话 / 提示词 / 记忆引用、Token 估算、草稿自动保存、提示词模板库
 - [x] Slash 命令菜单（`/new` `/clear` `/fork` `/compact` `/init` + 内置 / 自定义模板）
+- [x] Agent Loop 自主工作模式（目标 + 轮数 + token 预算，自动执行 / 测试 / 修复，可停止和完成通知）
 - [x] Prompt 优化器（本地黄金样本库、按任务类型沉淀个人规则、相似成功样本、三档改写、一键采用）
-- [x] Chrome 选中即问插件（右键解释 / 审查 / 改写 / 生成测试，Side Panel 流式回答，可转入完整 Web 会话）
+- [x] Chrome 当前页面 / 选中即问插件（点击图标打开 Side Panel、读取当前页、右键解释 / 审查 / 改写 / 生成测试，可转入完整 Web 会话）
 - [x] Mermaid / LaTeX 渲染、图片 Lightbox、代码块复制与本地运行
 - [x] 会话置顶 / 归档 / 标签 / 搜索 / 导出 / 双击重命名 / AI 智能命名
+- [x] 长会话里程碑标记（用户消息 / 回答点 ⭐，左侧「标记」Tab 快速回看关键轮次）
 - [x] 历史消息就地编辑继续、重新生成分叉、Git checkpoint 回滚
 - [x] TodoWrite 实时看板、统计面板、Git 状态栏、暗黑模式、移动端侧栏
 - [x] 权限策略（CLI 默认 / 允许编辑 / 计划 / 只读 / 自定义工具）和权限失败后的本会话临时放行重试

@@ -25,15 +25,18 @@
       <div class="empty-icon" aria-hidden="true">C</div>
       <h2>选中内容后直接问 Claude</h2>
       <p>在网页里选中代码或文字，右键选择 Claude Code Web。回答会出现在这里，也可以继续到完整 Web 会话。</p>
-      <button id="emptyOptionsBtn" type="button">配置本地连接</button>
+      <div class="empty-actions">
+        <button id="emptyCapturePageBtn" type="button">读取当前页</button>
+        <button id="emptyOptionsBtn" type="button">配置本地连接</button>
+      </div>
       <p id="lastError" class="error hidden"></p>
     </section>
 
     <section id="workState" class="work hidden">
       <div id="askState" class="context panel-width">
-        <div class="context-head">
+          <div class="context-head">
           <div>
-            <div class="source-kicker">当前选中</div>
+            <div id="sourceKicker" class="source-kicker">当前选中</div>
             <div id="askTitle" class="source-title"></div>
           </div>
           <button id="toggleContextTextBtn" class="text-button" type="button">展开</button>
@@ -63,6 +66,9 @@
               </button>
               <button id="stopBtn" class="icon-btn danger" type="button" title="停止回答" aria-label="停止回答" data-tooltip="停止回答" disabled>
                 <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>
+              </button>
+              <button id="capturePageBtn" class="icon-btn" type="button" title="读取当前页" aria-label="读取当前页" data-tooltip="读取当前页">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/><path d="M8 13h8"/><path d="M8 17h6"/></svg>
               </button>
             </div>
             <div class="model-group">

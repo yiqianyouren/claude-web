@@ -223,6 +223,40 @@
     border-color: var(--accent); color: var(--accent); background: var(--accent-soft-2);
   }
   .dark .feedback-reason.active { background: var(--accent-soft); }
+  .milestone-item {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 9px 10px;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, transform .12s;
+  }
+  .milestone-item:hover {
+    border-color: var(--accent-soft);
+    background: var(--surface-2);
+  }
+  .milestone-item:active { transform: translateY(1px); }
+  .milestone-meta {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    font-size: 11px; color: var(--text-subtle);
+  }
+  .milestone-excerpt {
+    margin-top: 5px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted);
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .milestone-hit {
+    animation: milestonePulse 1.2s ease-out;
+  }
+  @keyframes milestonePulse {
+    0% { box-shadow: 0 0 0 0 rgba(194, 65, 12, .34); }
+    100% { box-shadow: 0 0 0 12px rgba(194, 65, 12, 0); }
+  }
 
   /* ===== Avatar ===== */
   .avatar {
@@ -1394,6 +1428,35 @@
   }
   .composer-send:hover { background: var(--accent); color: white; transform: scale(1.03); }
   .composer-send:disabled { background: var(--border-strong); color: var(--text-subtle); cursor: not-allowed; transform: none; }
+  .agent-loop-status {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-soft);
+    border-radius: 12px;
+    background: var(--accent-soft-2);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .agent-loop-status.active { display: flex; }
+  .agent-loop-status .agent-loop-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-muted);
+  }
+  .agent-loop-stop {
+    flex: 0 0 auto;
+    padding: 4px 8px;
+    border-radius: 7px;
+    color: #fff;
+    background: #ef4444;
+    font-size: 11px;
+  }
 
   /* ===== Sidebar icon button ===== */
   .sb-icon-btn {
@@ -1460,6 +1523,7 @@
   <div class="px-3 pt-3 pb-1 flex items-center gap-3 text-[11px] uppercase tracking-wider" style="color:var(--text-subtle); font-weight:600;">
     <button id="viewActive" class="tab-btn transition-colors tab-active">活跃</button>
     <button id="viewArchived" class="tab-btn transition-colors">归档</button>
+    <button id="viewMilestones" class="tab-btn transition-colors">标记</button>
     <button id="viewCli" class="tab-btn transition-colors">CLI</button>
   </div>
   <div id="tagFilter" class="px-3 text-xs hidden"></div>
@@ -1575,6 +1639,13 @@
     <form id="form" class="max-w-3xl mx-auto relative">
       <input type="file" id="fileInput" accept="image/*" multiple class="hidden" />
       <input type="file" id="docInput" multiple class="hidden" />
+      <div id="agentLoopStatus" class="agent-loop-status">
+        <div class="min-w-0">
+          <div class="font-medium">Agent Loop 运行中</div>
+          <div id="agentLoopStatusText" class="agent-loop-meta">准备中...</div>
+        </div>
+        <button id="agentLoopStopBtn" type="button" class="agent-loop-stop">停止</button>
+      </div>
       <div class="composer relative" id="composer">
         <textarea id="input" rows="1" placeholder="输入消息，让 Claude 帮你..."
           class="composer-textarea"></textarea>
@@ -1591,6 +1662,9 @@
             </button>
             <button type="button" id="promptOptimizeBtn" class="composer-btn" title="优化 Prompt">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9H6"/><path d="M20 9h-2"/><path d="m17.8 6.2 1.4-1.4"/><path d="m10.8 13.2-1.4 1.4"/><path d="m10.8 4.8-1.4-1.4"/><path d="m17.8 11.8 1.4 1.4"/><path d="M12 9a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/><path d="m3 21 9-9"/></svg>
+            </button>
+            <button type="button" id="agentLoopBtn" class="composer-btn" title="Agent Loop 自主工作">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>
             </button>
             <div id="tokenCounter" class="text-[10px] ml-1" style="color:var(--text-subtle);">0 tokens</div>
           </div>
@@ -1610,6 +1684,51 @@
       </div>
     </form>
   </footer>
+</div>
+
+<!-- Agent Loop modal -->
+<div id="agentLoopModal" class="modal-backdrop hidden">
+  <div class="modal-box p-5" style="max-width:640px;">
+    <div class="flex items-center justify-between mb-4">
+      <div>
+        <div class="text-lg font-semibold">Agent Loop</div>
+        <div class="text-xs mt-0.5" style="color:var(--text-subtle);">让 Claude 自动迭代：执行目标、跑测试、修复问题，直到完成或预算用完。</div>
+      </div>
+      <button data-close class="text-xl">×</button>
+    </div>
+    <div class="space-y-3 text-sm">
+      <div>
+        <label class="block font-medium mb-1">目标</label>
+        <textarea id="agentLoopGoal" rows="5" placeholder="例如：实现当前页面全文上下文功能，跑相关检查，修掉发现的问题。"
+          class="w-full px-3 py-2 rounded text-sm"></textarea>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label class="block font-medium mb-1">最多轮数</label>
+          <input id="agentLoopMaxTurns" type="number" min="1" max="20" value="5" class="w-full px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label class="block font-medium mb-1">Token 上限</label>
+          <input id="agentLoopTokenBudget" type="number" min="1000" step="1000" value="30000" class="w-full px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label class="block font-medium mb-1">完成通知</label>
+          <label class="inline-flex items-center gap-2 px-1 py-2"><input id="agentLoopNotify" type="checkbox" checked /> 浏览器通知</label>
+        </div>
+      </div>
+      <div>
+        <label class="block font-medium mb-1">测试命令（可选）</label>
+        <input id="agentLoopTestCommand" type="text" placeholder="例如：pytest 或 npm test；会交给 Claude 在每轮中自行运行" class="w-full px-3 py-2 text-sm" />
+      </div>
+      <div class="rounded p-3 text-xs" style="background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted);">
+        Loop 会复用当前权限策略和工作目录。浏览器标签页保持打开时效果最好；需要中断时点输入框上方的“停止”。
+      </div>
+      <div class="flex justify-end gap-2 pt-1">
+        <button type="button" data-close class="px-3 py-1.5 rounded text-sm" style="background:var(--surface-2); color:var(--text-muted);">取消</button>
+        <button id="agentLoopStartBtn" type="button" class="px-3 py-1.5 rounded text-sm" style="background:var(--accent); color:white;">开始循环</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Artifact Preview Panel -->
@@ -2166,9 +2285,11 @@
         <div>• 粘贴图片直接发送（支持截图）</div>
         <div>• 粘贴 URL 自动抓取网页正文作为上下文</div>
         <div>• 拖拽文档（PDF / DOCX / XLSX 等）上传并提取文本</div>
+        <div>• 点击输入框工具栏的循环按钮可启动 Agent Loop，让 Claude 按目标自动迭代到完成、阻塞或预算用完</div>
         <div>• 点击输入框工具栏的魔法棒，基于黄金样本和个人规则优化当前 Prompt</div>
-        <div>• Chrome 插件支持网页选中即问，结果可在 Side Panel 流式查看并转入 Web 会话</div>
-        <div>• 给回答点 👍 或收藏后，可作为 Prompt 优化器的黄金样本候选</div>
+        <div>• Chrome 插件支持点击图标打开 Side Panel，也可读取当前页面全文或右键选中内容提问</div>
+        <div>• 给关键用户消息或回答点 ⭐，再到左侧「标记」Tab 快速回看长会话里程碑</div>
+        <div>• 给回答点 👍 或标记后，可作为 Prompt 优化器的黄金样本候选</div>
         <div>• 工具调用失败时可一键放行权限重试</div>
         <div>• Git 仓库自动 checkpoint，可一键回滚到对话前</div>
         <div>• 双击会话标题重命名，或点 🪄 让 AI 命名</div>
@@ -2229,6 +2350,7 @@ let pendingImageGeneration = 0;
 let currentController = null;
 let archivedView = false;
 let cliView = false;
+let milestoneView = false;
 let activeTagFilter = null;
 let sessionListRequestId = 0;
 let cliSessionListRequestId = 0;
@@ -2259,6 +2381,17 @@ const webSearchBtn = $('webSearchBtn');
 const docInput = $('docInput');
 const docAttachBtn = $('docAttachBtn');
 const docChipsEl = $('docChips');
+const agentLoopBtn = $('agentLoopBtn');
+const agentLoopModal = $('agentLoopModal');
+const agentLoopGoal = $('agentLoopGoal');
+const agentLoopMaxTurns = $('agentLoopMaxTurns');
+const agentLoopTokenBudget = $('agentLoopTokenBudget');
+const agentLoopTestCommand = $('agentLoopTestCommand');
+const agentLoopNotify = $('agentLoopNotify');
+const agentLoopStartBtn = $('agentLoopStartBtn');
+const agentLoopStatus = $('agentLoopStatus');
+const agentLoopStatusText = $('agentLoopStatusText');
+const agentLoopStopBtn = $('agentLoopStopBtn');
 const jumpBottomBtn = $('jumpBottomBtn');
 const jumpBottomBadge = $('jumpBottomBadge');
 const todoPanel = $('todoPanel');
@@ -2340,7 +2473,7 @@ const memoryBar = $('memoryBar');
 const tokenBar = $('tokenBar');
 const tokenCounter = $('tokenCounter');
 const filePicker = $('filePicker');
-const viewActiveBtn = $('viewActive'), viewArchivedBtn = $('viewArchived'), viewCliBtn = $('viewCli');
+const viewActiveBtn = $('viewActive'), viewArchivedBtn = $('viewArchived'), viewMilestonesBtn = $('viewMilestones'), viewCliBtn = $('viewCli');
 const tagFilter = $('tagFilter');
 const lightbox = $('lightbox');
 const gitBar = $('gitBar');
@@ -2654,11 +2787,15 @@ function addUserMessage(text, images, opts) {
   const compacted = !!opts.compacted;
   const docs = Array.isArray(opts.docs) ? opts.docs : [];
   const fullText = typeof opts.fullText === 'string' ? opts.fullText : '';
+  const feedbackEventIndex = opts.eventIndex !== undefined ? opts.eventIndex : userIdx;
+  const messageKey = `user:${userIdx}`;
+  const excerpt = text.slice(0, 500);
   lastUserIndex = userIdx;
   removeWelcome();
   const el = document.createElement('div');
   el.className = 'flex justify-end user-msg-wrap msg-enter';
   el.dataset.userIndex = String(userIdx);
+  el.dataset.messageKey = messageKey;
   if (fullText) el.dataset.fullText = fullText;
   const imagesHtml = (images && images.length) ? `
     <div class="flex flex-wrap gap-2 justify-end mb-1">
@@ -2678,6 +2815,7 @@ function addUserMessage(text, images, opts) {
       ${textHtml}
       <div class="user-msg-actions absolute -left-24 top-2 opacity-0 group-hover:opacity-100 flex flex-col gap-1 text-xs" style="color:var(--text-subtle);">
         <button data-copy="${encodeURIComponent(text)}" title="复制" class="hover:text-gray-700 dark:hover:text-gray-200">📋</button>
+        <button data-feedback-star-user data-message-key="${messageKey}" data-event-index="${feedbackEventIndex}" data-excerpt="${escapeHtml(excerpt)}" title="标记为里程碑" class="hover:text-amber-500">⭐</button>
         <button data-edit="${userIdx}" title="编辑并留在当前对话" class="hover:text-blue-500">✏️</button>
         ${hasCheckpoint ? `<button data-restore="${userIdx}" title="回滚此轮前的文件状态" class="hover:text-amber-500">⏪</button>` : ''}
       </div>
@@ -2694,6 +2832,7 @@ function addUserMessage(text, images, opts) {
     });
   }
   chatInner.appendChild(el);
+  applyFeedbackState(messageKey);
   forceScrollBottom();
 }
 
@@ -2773,7 +2912,7 @@ function feedbackSummaryText(feedback) {
   const parts = [];
   if (feedback.rating === 'up') parts.push('已好评');
   if (feedback.rating === 'down') parts.push('已差评');
-  if (feedback.starred) parts.push('已收藏');
+  if (feedback.starred) parts.push('里程碑');
   if (feedback.reason) parts.push(feedbackReasonLabel(feedback.reason));
   if (feedback.note) parts.push(feedback.note);
   return parts.join(' · ');
@@ -2803,7 +2942,7 @@ function renderFeedbackControls(container, meta = {}) {
   bar.innerHTML = `
     <button type="button" class="feedback-btn" data-feedback-rating="up" title="好评：这条回答有帮助" aria-label="好评">👍</button>
     <button type="button" class="feedback-btn" data-feedback-rating="down" title="差评：这条回答有问题" aria-label="差评">👎</button>
-    <button type="button" class="feedback-btn" data-feedback-star title="收藏：后续复用或统计" aria-label="收藏">⭐</button>
+    <button type="button" class="feedback-btn" data-feedback-star title="标记为里程碑：用于长会话回顾" aria-label="标记为里程碑">⭐</button>
     <button type="button" class="feedback-btn" data-feedback-detail title="添加原因或备注" aria-label="反馈详情">⋯</button>
     <span class="feedback-note-pill hidden"></span>
   `;
@@ -2828,6 +2967,11 @@ function applyFeedbackState(messageKey) {
       pill.title = text;
       pill.classList.toggle('hidden', !text);
     }
+  });
+  chatInner.querySelectorAll(`[data-feedback-star-user][data-message-key="${cssEscape(messageKey)}"]`).forEach(btn => {
+    btn.classList.toggle('text-amber-500', !!feedback.starred);
+    btn.classList.toggle('opacity-100', !!feedback.starred);
+    btn.title = feedback.starred ? '取消里程碑标记' : '标记为里程碑';
   });
 }
 
@@ -2857,6 +3001,7 @@ async function saveFeedback(messageKey, patch = {}) {
     else if (data.feedback) sessionFeedback[messageKey] = data.feedback;
     applyFeedbackState(messageKey);
     renderFeedbackStats(data.stats || null);
+    if (milestoneView) renderMilestones();
   } catch (e) {
     toast('反馈保存失败：' + (e.message || e));
   }
@@ -3987,6 +4132,14 @@ function formatTurnUsage(usage) {
   return parts.join(' · ');
 }
 
+function usageTokenTotal(usage) {
+  if (!usage || typeof usage !== 'object') return 0;
+  return Number(usage.input_tokens || 0)
+    + Number(usage.output_tokens || 0)
+    + Number(usage.cache_read_input_tokens || 0)
+    + Number(usage.cache_creation_input_tokens || 0);
+}
+
 function resetSessionTokens() {
   sessionTokens = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
   renderSessionTokens();
@@ -4930,6 +5083,21 @@ document.addEventListener('click', (e) => {
     });
     return;
   }
+  const userFeedbackStarBtn = e.target.closest('[data-feedback-star-user]');
+  if (userFeedbackStarBtn) {
+    e.stopPropagation();
+    const messageKey = userFeedbackStarBtn.dataset.messageKey;
+    const current = currentFeedbackFor(messageKey);
+    saveFeedback(messageKey, {
+      event_index: userFeedbackStarBtn.dataset.eventIndex ? Number(userFeedbackStarBtn.dataset.eventIndex) : -1,
+      rating: current.rating || '',
+      starred: !current.starred,
+      reason: current.reason || '',
+      note: current.note || '',
+      message_excerpt: userFeedbackStarBtn.dataset.excerpt || current.message_excerpt || '',
+    });
+    return;
+  }
   const feedbackDetailBtn = e.target.closest('[data-feedback-detail]');
   if (feedbackDetailBtn) {
     e.stopPropagation();
@@ -5697,9 +5865,145 @@ async function sendRaw(sentMessage, displayMessage, imagePaths = []) {
   return sendCore(sentMessage, displayMessage, imagePaths, { forceNew: true });
 }
 
+let agentLoopRunning = false;
+let agentLoopStopRequested = false;
+
+function setAgentLoopStatus(text) {
+  if (!agentLoopStatus || !agentLoopStatusText) return;
+  agentLoopStatus.classList.toggle('active', agentLoopRunning);
+  agentLoopStatusText.textContent = text || '';
+}
+
+function agentLoopInitialPrompt({ goal, maxTurns, tokenBudget, testCommand }) {
+  return [
+    '进入 Agent Loop 自主工作模式。',
+    '',
+    `目标：${goal}`,
+    `预算：最多 ${maxTurns} 轮，约 ${tokenBudget} tokens。`,
+    testCommand ? `建议测试命令：${testCommand}` : '测试命令：请根据项目自行选择合适的检查/测试命令。',
+    '',
+    '请按以下循环工作：',
+    '1. 明确下一步计划。',
+    '2. 修改代码或文件。',
+    '3. 运行必要测试/检查。',
+    '4. 如果失败，分析错误并继续修复。',
+    '5. 如果目标已经完成且验证通过，请在回答最后单独写一行：AGENT_LOOP_DONE。',
+    '6. 如果无法继续，请在回答最后单独写一行：AGENT_LOOP_BLOCKED，并说明阻塞原因。',
+  ].join('\n');
+}
+
+function agentLoopContinuePrompt({ goal, turn, maxTurns, usedTokens, tokenBudget, testCommand }) {
+  return [
+    '继续 Agent Loop。',
+    '',
+    `目标：${goal}`,
+    `当前进度：第 ${turn} / ${maxTurns} 轮后继续。已用约 ${usedTokens} / ${tokenBudget} tokens。`,
+    testCommand ? `建议测试命令：${testCommand}` : '请继续自行选择合适的测试/检查命令。',
+    '',
+    '请继续执行、测试、修复。若已经完成并验证通过，请在回答最后单独写一行：AGENT_LOOP_DONE。若无法继续，请写：AGENT_LOOP_BLOCKED。',
+  ].join('\n');
+}
+
+function agentLoopIsDone(text) {
+  return /\bAGENT_LOOP_DONE\b/i.test(text || '');
+}
+
+function agentLoopIsBlocked(text) {
+  return /\bAGENT_LOOP_BLOCKED\b/i.test(text || '');
+}
+
+function openAgentLoopModal() {
+  if (!agentLoopModal) return;
+  agentLoopGoal.value = input.value.trim();
+  openModal(agentLoopModal);
+  setTimeout(() => agentLoopGoal.focus(), 0);
+}
+
+async function runAgentLoop() {
+  if (agentLoopRunning) return;
+  const goal = agentLoopGoal.value.trim();
+  if (!goal) {
+    toast('请先填写 Agent Loop 目标');
+    agentLoopGoal.focus();
+    return;
+  }
+  const maxTurns = Math.max(1, Math.min(20, Number(agentLoopMaxTurns.value || 5)));
+  const tokenBudget = Math.max(1000, Number(agentLoopTokenBudget.value || 30000));
+  const testCommand = agentLoopTestCommand.value.trim();
+  const notifyOnFinish = !!agentLoopNotify.checked;
+  closeModal(agentLoopModal);
+  clearDraft();
+  input.value = '';
+  updateTokenCount();
+  autosizeTextarea();
+
+  agentLoopRunning = true;
+  agentLoopStopRequested = false;
+  if (agentLoopBtn) agentLoopBtn.classList.add('toolbar-btn-active');
+  let usedTokens = 0;
+  let lastText = '';
+  setAgentLoopStatus(`第 1/${maxTurns} 轮 · 0/${_fmtTokens(tokenBudget)} tokens`);
+  try {
+    for (let turn = 1; turn <= maxTurns; turn++) {
+      if (agentLoopStopRequested) break;
+      const prompt = turn === 1
+        ? agentLoopInitialPrompt({ goal, maxTurns, tokenBudget, testCommand })
+        : agentLoopContinuePrompt({ goal, turn, maxTurns, usedTokens, tokenBudget, testCommand });
+      setAgentLoopStatus(`第 ${turn}/${maxTurns} 轮运行中 · ${_fmtTokens(usedTokens)}/${_fmtTokens(tokenBudget)} tokens`);
+      const result = await sendCore(prompt, turn === 1 ? goal : `继续 Agent Loop：${goal}`, [], { forceNew: turn === 1, quiet: true });
+      if (!result?.ok) {
+        if (!result?.aborted && !agentLoopStopRequested) {
+          toast('Agent Loop 本轮失败，已停止继续循环');
+        }
+        break;
+      }
+      lastText = result?.text || '';
+      usedTokens += usageTokenTotal(result?.usage);
+      setAgentLoopStatus(`第 ${turn}/${maxTurns} 轮完成 · ${_fmtTokens(usedTokens)}/${_fmtTokens(tokenBudget)} tokens`);
+      if (agentLoopStopRequested) break;
+      if (agentLoopIsDone(lastText)) {
+        toast('Agent Loop 已完成');
+        if (notifyOnFinish) notifyUser('Agent Loop 已完成', goal.slice(0, 80));
+        break;
+      }
+      if (agentLoopIsBlocked(lastText)) {
+        toast('Agent Loop 已阻塞，查看最后一条回复');
+        if (notifyOnFinish) notifyUser('Agent Loop 已阻塞', goal.slice(0, 80));
+        break;
+      }
+      if (usedTokens >= tokenBudget) {
+        toast('Agent Loop 已达到 token 上限');
+        if (notifyOnFinish) notifyUser('Agent Loop 已达到预算', goal.slice(0, 80));
+        break;
+      }
+      if (turn === maxTurns) {
+        toast('Agent Loop 已达到最多轮数');
+        if (notifyOnFinish) notifyUser('Agent Loop 已达到轮数上限', goal.slice(0, 80));
+      }
+    }
+  } catch (e) {
+    toast('Agent Loop 出错：' + (e.message || e), { timeout: 5000 });
+  } finally {
+    agentLoopRunning = false;
+    agentLoopStopRequested = false;
+    if (agentLoopBtn) agentLoopBtn.classList.remove('toolbar-btn-active');
+    sendBtn.disabled = false;
+    setAgentLoopStatus('');
+    refreshSessions();
+  }
+}
+
+async function stopAgentLoop() {
+  agentLoopStopRequested = true;
+  setAgentLoopStatus('正在停止...');
+  if (sessionId) { try { await fetch('/api/chat/stop/' + sessionId, { method:'POST' }); } catch {} }
+  if (currentController) currentController.abort();
+}
+
 async function sendCore(message, displayMessage, imagePaths, options = {}) {
   const isFork = !!displayMessage;
   const forceNew = options.forceNew === true;
+  const quiet = options.quiet === true;
 
   // Gemini-style: fetch detected URLs at send time
   if (!isFork && urlContext.size > 0) {
@@ -5745,6 +6049,9 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
   sendBtn.disabled = true;
   stopBtn.classList.remove('hidden');
   currentController = new AbortController();
+  let lastResultEvent = null;
+  let collectedAssistantText = '';
+  let streamErrorEvent = null;
 
   const perm = buildPermissionPayload();
 
@@ -5768,7 +6075,11 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
       }),
       signal: currentController.signal,
     });
-    if (!resp.ok || !resp.body) { hideThinking(container); addErrorBlock('请求失败: ' + resp.status); return; }
+    if (!resp.ok || !resp.body) {
+      hideThinking(container);
+      addErrorBlock('请求失败: ' + resp.status);
+      return { ok: false, status: resp.status, text: collectedAssistantText.trim(), usage: lastResultEvent?.usage || null };
+    }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -5787,6 +6098,15 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
         try {
           const obj = JSON.parse(line.slice(6));
           if (obj.type === 'user_input') continue;
+          if (obj.type === 'error' || obj.type === 'permission_error') {
+            streamErrorEvent = obj;
+          }
+          if (obj.type === 'result') lastResultEvent = obj;
+          if (obj.type === 'stream_event' && obj.event?.type === 'content_block_delta' && obj.event.delta?.type === 'text_delta') {
+            collectedAssistantText += obj.event.delta.text || '';
+          } else if (obj.type === 'assistant') {
+            collectedAssistantText += '\n' + assistantTextFromEvent(obj);
+          }
           const result = handleEvent(obj, asstContainer);
           if (result) asstContainer = result;
         } catch (e) { console.warn('parse fail', line, e); }
@@ -5794,9 +6114,15 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
     }
     hideThinking(asstContainer);
     finishPendingToolUses('已结束', 'done');
-    notifyUser('Claude Code 已完成', titleLabel.textContent);
-    beep();
+    if (streamErrorEvent) {
+      return { ok: false, error: streamErrorEvent, text: collectedAssistantText.trim(), usage: lastResultEvent?.usage || null };
+    }
+    if (!quiet) {
+      notifyUser('Claude Code 已完成', titleLabel.textContent);
+      beep();
+    }
     fetchFollowupSuggestions();
+    return { ok: true, result: lastResultEvent, usage: lastResultEvent?.usage || null, text: collectedAssistantText.trim() };
   } catch (e) {
     hideThinking(container);
     if (e.name !== 'AbortError') {
@@ -5806,12 +6132,14 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
       finishPendingToolUses('已中止', 'stopped');
       addSystemInfo('已中止');
     }
+    return { ok: false, error: e, aborted: e.name === 'AbortError', text: collectedAssistantText.trim(), usage: lastResultEvent?.usage || null };
   } finally {
-    sendBtn.disabled = false;
+    sendBtn.disabled = agentLoopRunning;
     stopBtn.classList.add('hidden');
     currentController = null;
     input.focus();
     refreshSessions();
+    if (milestoneView) renderMilestones();
     refreshCwds();
     refreshGitStatus();
   }
@@ -5821,6 +6149,9 @@ stopBtn.addEventListener('click', async () => {
   if (sessionId) { try { await fetch('/api/chat/stop/' + sessionId, { method:'POST' }); } catch {} }
   if (currentController) currentController.abort();
 });
+if (agentLoopBtn) agentLoopBtn.addEventListener('click', openAgentLoopModal);
+if (agentLoopStartBtn) agentLoopStartBtn.addEventListener('click', runAgentLoop);
+if (agentLoopStopBtn) agentLoopStopBtn.addEventListener('click', stopAgentLoop);
 
 // Auto-stop the running stream when a plan card is filled in.
 // In headless mode there's no CLI approval prompt — without this the agent
@@ -5835,6 +6166,10 @@ function stopCurrentRunForPlan() {
 
 form.addEventListener('submit', (e) => {
   e.preventDefault();
+  if (agentLoopRunning) {
+    toast('Agent Loop 正在运行，请先停止后再手动发送');
+    return;
+  }
   hidePicker();
   const text = input.value.trim();
   const readyDocs = pendingDocs.filter(d => d.status === 'ready' && d.content).length;
@@ -5887,6 +6222,7 @@ function startNewSession() {
   hidePicker();
   sessionId = null;
   sessionFeedback = {};
+  milestoneView = false;
   titleLabel.textContent = '新会话';
   sessionLabelText.textContent = '尚未开始';
   suggestTitleBtn.classList.add('hidden');
@@ -5905,6 +6241,7 @@ function startNewSession() {
   resetSessionTokens();
   refreshMemories();
   restoreDraft();
+  updateViewTabs();
   highlightActiveSession();
 }
 
@@ -5914,11 +6251,21 @@ searchInput.addEventListener('input', () => {
   searchTimer = setTimeout(() => refreshSessions(), 300);
 });
 
-viewActiveBtn.addEventListener('click', () => { archivedView = false; cliView = false; updateViewTabs(); refreshSessions(); });
-viewArchivedBtn.addEventListener('click', () => { archivedView = true; cliView = false; updateViewTabs(); refreshSessions(); });
+viewActiveBtn.addEventListener('click', () => { archivedView = false; cliView = false; milestoneView = false; updateViewTabs(); refreshTags(); refreshSessions(); });
+viewArchivedBtn.addEventListener('click', () => { archivedView = true; cliView = false; milestoneView = false; updateViewTabs(); refreshTags(); refreshSessions(); });
+viewMilestonesBtn.addEventListener('click', () => {
+  milestoneView = true;
+  archivedView = false;
+  cliView = false;
+  sessionListRequestId++;
+  updateViewTabs();
+  renderMilestones();
+});
 viewCliBtn.addEventListener('click', () => {
   cliView = true;
   archivedView = false;
+  milestoneView = false;
+  tagFilter.classList.add('hidden');
   sessionListRequestId++;
   updateViewTabs();
   renderCliSessionList();
@@ -5946,6 +6293,11 @@ async function refreshTags() {
 }
 
 async function refreshSessions() {
+  if (milestoneView) {
+    updateViewTabs();
+    renderMilestones();
+    return;
+  }
   if (cliView) {
     updateViewTabs();
     renderCliSessionList();
@@ -6057,6 +6409,82 @@ async function refreshSessions() {
   } catch (e) { console.warn(e); }
 }
 
+function milestoneTargetSelector(item) {
+  const key = item.message_key || '';
+  if (key.startsWith('user:')) {
+    const idx = Number(key.slice(5));
+    if (Number.isFinite(idx)) return `.user-msg-wrap[data-user-index="${idx}"]`;
+  }
+  if (key) {
+    return `.message-feedback[data-message-key="${cssEscape(key)}"]`;
+  }
+  return '';
+}
+
+function scrollToMilestone(item) {
+  const selector = milestoneTargetSelector(item);
+  const target = selector ? chatInner.querySelector(selector) : null;
+  if (!target) {
+    toast('这条标记暂时不在当前渲染内容中');
+    return;
+  }
+  const host = target.closest('.asst-wrap, .user-msg-wrap') || target;
+  userScrolledUp = true;
+  host.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  host.classList.remove('milestone-hit');
+  void host.offsetWidth;
+  host.classList.add('milestone-hit');
+}
+
+async function renderMilestones() {
+  updateViewTabs();
+  const requestId = ++sessionListRequestId;
+  tagFilter.classList.add('hidden');
+  if (!sessionId) {
+    sessionList.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">打开一个会话后查看标记</div>';
+    return;
+  }
+  sessionList.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">加载标记中...</div>';
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/milestones`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (!milestoneView || requestId !== sessionListRequestId) return;
+    const items = data.milestones || [];
+    if (!items.length) {
+      sessionList.innerHTML = '<div class="text-xs text-center py-6 px-3" style="color:var(--text-subtle);">还没有标记。点消息旁边的 ⭐，就能把关键轮次收进这里。</div>';
+      return;
+    }
+    sessionList.innerHTML = `
+      <div class="px-1 pb-2 text-[11px]" style="color:var(--text-subtle);">当前会话 · ${items.length} 个标记</div>
+      <div class="space-y-2">
+        ${items.map((item, idx) => {
+          const label = item.message_key && item.message_key.startsWith('user:') ? '用户' : 'Claude';
+          const turn = item.event_index >= 0 ? `#${item.event_index + 1}` : `#${idx + 1}`;
+          const note = item.note ? ` · ${item.note}` : '';
+          const reason = item.reason ? ` · ${feedbackReasonLabel(item.reason)}` : '';
+          return `<button type="button" class="milestone-item w-full text-left" data-milestone-idx="${idx}">
+            <div class="milestone-meta">
+              <span>⭐ ${label} ${turn}</span>
+              <span>${formatTime(item.updated_at)}</span>
+            </div>
+            <div class="milestone-excerpt">${escapeHtml((item.message_excerpt || '无摘要') + reason + note)}</div>
+          </button>`;
+        }).join('')}
+      </div>
+    `;
+    sessionList.querySelectorAll('[data-milestone-idx]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = items[Number(btn.dataset.milestoneIdx)];
+        if (item) scrollToMilestone(item);
+      });
+    });
+  } catch (e) {
+    if (!milestoneView || requestId !== sessionListRequestId) return;
+    sessionList.innerHTML = `<div class="text-xs text-center py-6" style="color:#ef4444;">标记加载失败：${escapeHtml(e.message || e)}</div>`;
+  }
+}
+
 function highlightActiveSession() {
   sessionList.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('active', el.dataset.id === sessionId);
@@ -6071,6 +6499,7 @@ async function loadSession(id) {
     const data = await r.json();
     sessionId = data.id;
     sessionFeedback = data.feedback || {};
+    if (milestoneView) renderMilestones();
     titleLabel.textContent = data.title;
     sessionLabelText.textContent = '会话 ' + data.id.slice(0, 8);
     streamedIds.clear();
@@ -6091,7 +6520,7 @@ async function loadSession(id) {
     let asstContainer = null;
     data.events.forEach((ev, eventIndex) => {
       if (ev.type === 'user_input') {
-        addUserMessage(ev.text || '', ev.images || [], { hasCheckpoint: !!ev.checkpoint, docs: ev.docs || [], fullText: ev.full_text || '', compacted: !!ev.compacted });
+        addUserMessage(ev.text || '', ev.images || [], { hasCheckpoint: !!ev.checkpoint, docs: ev.docs || [], fullText: ev.full_text || '', compacted: !!ev.compacted, eventIndex });
         asstContainer = null;
       } else if (ev.type === 'assistant' || ev.type === 'user') {
         const c = handleEvent(ev, asstContainer, { replay: true, eventIndex });
@@ -6175,7 +6604,7 @@ function renderFeedbackStats(feedback) {
   setText('feedbackDownCount', down);
   setText('feedbackStarCount', starred);
   setText('feedbackTotalCount', total);
-  setText('feedbackStatsSummary', total ? `${up} 好评 · ${down} 差评 · ${starred} 收藏` : '暂无标记');
+  setText('feedbackStatsSummary', total ? `${up} 好评 · ${down} 差评 · ${starred} 标记` : '暂无标记');
 
   const reasonList = $('feedbackReasonList');
   if (reasonList) {
@@ -7571,10 +8000,10 @@ document.querySelectorAll('.empty-card').forEach(card => {
 
 // ===== sidebar tab styling =====
 function updateTabStyles() {
-  [viewActiveBtn, viewArchivedBtn, viewCliBtn].forEach(b => {
+  [viewActiveBtn, viewArchivedBtn, viewMilestonesBtn, viewCliBtn].forEach(b => {
     if (b) b.classList.remove('tab-active');
   });
-  const activeBtn = cliView ? viewCliBtn : (archivedView ? viewArchivedBtn : viewActiveBtn);
+  const activeBtn = cliView ? viewCliBtn : (milestoneView ? viewMilestonesBtn : (archivedView ? viewArchivedBtn : viewActiveBtn));
   if (activeBtn) activeBtn.classList.add('tab-active');
 }
 

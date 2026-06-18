@@ -51,6 +51,15 @@ async function createMenus() {
   }
 }
 
+async function configureSidePanel() {
+  if (!chrome.sidePanel?.setPanelBehavior) return;
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (error) {
+    rememberError(error);
+  }
+}
+
 function publishActiveTab(tab) {
   const context = tabContext(tab);
   if (!context) return;
@@ -59,10 +68,12 @@ function publishActiveTab(tab) {
 
 chrome.runtime.onInstalled.addListener(() => {
   createMenus();
+  configureSidePanel();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   createMenus();
+  configureSidePanel();
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
@@ -98,6 +109,15 @@ async function openAssistant(tab) {
     rememberError(error);
   }
 }
+
+chrome.action.onClicked.addListener((tab) => {
+  const context = tabContext(tab);
+  const payload = context
+    ? { [ACTIVE_TAB_CONTEXT_KEY]: context, lastExtensionError: null }
+    : { lastExtensionError: null };
+  chrome.storage.local.set(payload).catch(rememberError);
+  openAssistant(tab);
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (!info.menuItemId || !String(info.menuItemId).startsWith(MENU_PREFIX)) return;

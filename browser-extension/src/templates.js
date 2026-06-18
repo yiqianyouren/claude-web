@@ -24,6 +24,11 @@ export const ACTIONS = {
     menuTitle: "自定义提问",
     title: "自定义提问",
   },
+  page: {
+    label: "当前页",
+    menuTitle: "询问当前页面",
+    title: "当前页面",
+  },
 };
 
 export const DEFAULT_SETTINGS = {

@@ -1,10 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Claude Code Web Assistant",
-  "description": "Select code or text on any page and ask Claude Code Web from the Chrome side panel.",
+  "description": "Ask Claude Code Web about selected text or the current page from the Chrome side panel.",
   "version": "0.1.0",
-  "permissions": ["contextMenus", "sidePanel", "storage", "tabs"],
+  "permissions": ["activeTab", "contextMenus", "scripting", "sidePanel", "storage", "tabs"],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],

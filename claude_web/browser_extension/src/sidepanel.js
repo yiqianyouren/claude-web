@@ -17,6 +17,7 @@ let saveTimer = 0;
 
 const TAB_STATES_KEY = "tabStates";
 const MAX_TAB_STATES = 20;
+const MAX_PAGE_CONTEXT_CHARS = 40000;
 
 function show(el, visible) {
   el.classList.toggle("hidden", !visible);
@@ -42,6 +43,10 @@ function setLastError(error) {
   const message = error?.message || "";
   el.textContent = message ? `最近一次错误：${message}` : "";
   show(el, Boolean(message));
+}
+
+function askSourceLabel(ask) {
+  return ask?.sourceType === "page" || ask?.action === "page" ? "当前页面" : "当前选中";
 }
 
 function renderAnswer() {
@@ -125,6 +130,7 @@ function restoreTabState(snapshot) {
   streamedMessageIds = new Set();
   contextExpanded = Boolean(snapshot.contextExpanded);
   $("subtitle").textContent = actionTitle(currentAsk.action);
+  $("sourceKicker").textContent = askSourceLabel(currentAsk);
   $("askTitle").textContent = currentAsk.pageTitle || "当前网页";
   $("askUrl").textContent = currentAsk.pageUrl || "";
   $("askUrl").href = currentAsk.pageUrl || "#";
@@ -211,6 +217,101 @@ function selectedPreview(text) {
   return value.length > 3500 ? value.slice(0, 3500) + "\n\n...已截断预览" : value;
 }
 
+async function getActiveTab() {
+  if (activeTabContext?.tabId != null) {
+    try {
+      return await chrome.tabs.get(activeTabContext.tabId);
+    } catch {}
+  }
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs?.[0] || null;
+}
+
+function extractReadablePageText() {
+  const blockedTags = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "SVG", "CANVAS"]);
+  const walker = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const text = node.nodeValue || "";
+      if (!text.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent || blockedTags.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+      const style = window.getComputedStyle(parent);
+      if (style && (style.display === "none" || style.visibility === "hidden")) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  const parts = [];
+  let total = 0;
+  while (walker.nextNode()) {
+    const text = (walker.currentNode.nodeValue || "").replace(/\s+/g, " ").trim();
+    if (!text) continue;
+    parts.push(text);
+    total += text.length + 1;
+    if (total > 60000) break;
+  }
+  const headings = Array.from(document.querySelectorAll("h1,h2,h3"))
+    .map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 24);
+  const metaDescription = document.querySelector('meta[name="description"]')?.content || "";
+  return {
+    title: document.title || "",
+    url: location.href,
+    description: metaDescription.trim(),
+    headings,
+    text: parts.join("\n"),
+  };
+}
+
+function pageContextText(result) {
+  const headings = Array.isArray(result?.headings) && result.headings.length
+    ? `页面标题层级：\n${result.headings.map((h) => `- ${h}`).join("\n")}\n\n`
+    : "";
+  const description = result?.description ? `页面描述：${result.description}\n\n` : "";
+  const body = String(result?.text || "").trim();
+  const combined = `${description}${headings}页面正文：\n${body}`.trim();
+  return combined.length > MAX_PAGE_CONTEXT_CHARS
+    ? combined.slice(0, MAX_PAGE_CONTEXT_CHARS) + "\n\n...已截断当前页面正文"
+    : combined;
+}
+
+async function captureCurrentPage() {
+  if (currentController) return;
+  setStatus("正在读取当前页面...");
+  try {
+    const tab = await getActiveTab();
+    if (!tab?.id) throw new Error("找不到当前标签页");
+    const url = tab.url || "";
+    if (!/^https?:|^file:/.test(url)) {
+      throw new Error("当前页面类型不支持读取");
+    }
+    if (!chrome.scripting?.executeScript) {
+      throw new Error("当前扩展未启用页面读取权限，请在 chrome://extensions 刷新 Claude Code Web 扩展后重试");
+    }
+    const [injection] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: extractReadablePageText,
+    });
+    const result = injection?.result || {};
+    const text = pageContextText(result);
+    if (!text.trim()) throw new Error("没有读取到可见正文");
+    renderAsk({
+      id: crypto.randomUUID(),
+      action: "page",
+      sourceType: "page",
+      selectedText: text,
+      pageUrl: result.url || tab.url || "",
+      pageTitle: result.title || tab.title || "当前页面",
+      tabId: tab.id,
+      windowId: tab.windowId ?? null,
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    setStatus(`读取失败：${error.message || error}`);
+    setLastError(error);
+  }
+}
+
 function renderAsk(ask) {
   if (!askMatchesActiveTab(ask)) {
     resetForDifferentTab();
@@ -224,6 +325,7 @@ function renderAsk(ask) {
   lastStreamedMessageId = "";
   streamedMessageIds = new Set();
   $("subtitle").textContent = actionTitle(ask.action);
+  $("sourceKicker").textContent = askSourceLabel(ask);
   $("askTitle").textContent = ask.pageTitle || "当前网页";
   $("askUrl").textContent = ask.pageUrl || "";
   $("askUrl").href = ask.pageUrl || "#";
@@ -241,7 +343,7 @@ function renderAsk(ask) {
   show($("answerState"), false);
   chrome.storage.local.remove("pendingAsk").catch(() => {});
   saveCurrentTabState().catch(() => {});
-  if (ask.action !== "custom") sendAsk();
+  if (ask.action !== "custom" && ask.action !== "page") sendAsk();
 }
 
 function getEventText(obj) {
@@ -299,6 +401,10 @@ async function sendAsk() {
     setStatus("请输入自定义问题");
     return;
   }
+  if (ask.action === "page" && !question) {
+    setStatus("请输入要问当前页面的问题");
+    return;
+  }
   if (question) {
     $("customQuestion").value = "";
     resizeQuestionBox();
@@ -326,6 +432,7 @@ async function sendAsk() {
       body: JSON.stringify({
         action: ask.action,
         selected_text: ask.selectedText,
+        context_type: ask.sourceType || (ask.action === "page" ? "page" : "selection"),
         question,
         page_url: ask.pageUrl,
         page_title: ask.pageTitle,
@@ -473,6 +580,7 @@ $("askBtn").addEventListener("click", sendAsk);
 $("stopBtn").addEventListener("click", stopAsk);
 $("copyBtn").addEventListener("click", copyAnswer);
 $("continueBtn").addEventListener("click", openContinue);
+$("capturePageBtn").addEventListener("click", captureCurrentPage);
 $("openOptionsBtn").addEventListener("click", () => {
   saveCurrentTabState().catch(() => {});
   chrome.runtime.openOptionsPage();
@@ -481,6 +589,7 @@ $("emptyOptionsBtn").addEventListener("click", () => {
   saveCurrentTabState().catch(() => {});
   chrome.runtime.openOptionsPage();
 });
+$("emptyCapturePageBtn").addEventListener("click", captureCurrentPage);
 $("toggleContextBtn").addEventListener("click", toggleContext);
 $("toggleContextTextBtn").addEventListener("click", toggleContext);
 $("customQuestion").addEventListener("keydown", (event) => {
