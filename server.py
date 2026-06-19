@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import hmac
 import io
@@ -24,7 +25,7 @@ from contextlib import asynccontextmanager, contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlencode, urljoin, urlparse
 
 from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -50,12 +51,30 @@ DB_PATH = _DATA_DIR / "claude-web.db"
 
 _EXTENSION_TOKEN_META_KEY = "extension_token_hash_v1"
 _EXTENSION_TOKEN_CREATED_META_KEY = "extension_token_created_at_v1"
+_MOBILE_ACCESS_ENABLED_META_KEY = "mobile_access_enabled_v1"
+_MOBILE_ACCESS_CODE_HASH_META_KEY = "mobile_access_code_hash_v1"
+_MOBILE_ACCESS_CODE_EXPIRES_META_KEY = "mobile_access_code_expires_at_v1"
+_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY = "mobile_access_code_session_ttl_v1"
+_MOBILE_ACCESS_COOKIE = "cw_mobile_session"
+_MOBILE_ACCESS_CODE_TTL_SECONDS = 10 * 60
+_MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60
+_MOBILE_ACCESS_MAX_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
+_MOBILE_ACCESS_LOGIN_WINDOW_SECONDS = 5 * 60
+_MOBILE_ACCESS_MAX_LOGIN_FAILURES = 6
+_mobile_login_failures: Dict[str, List[float]] = {}
 _EXTENSION_DRAFT_TTL_SECONDS = 10 * 60
 _EXTENSION_MAX_SELECTED_CHARS = 40_000
 _EXTENSION_READONLY_DISALLOWED_TOOLS = ["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]
 _UPDATE_CHECK_URL = "https://pypi.org/pypi/claude-web-ui/json"
 _UPDATE_CHECK_TTL_SECONDS = 6 * 60 * 60
 _update_check_cache: Dict[str, object] = {"ts": 0.0, "data": None}
+_NOTIFICATION_SETTINGS_META_KEY = "notification_settings_v1"
+_NOTIFICATION_DELIVERIES_META_KEY = "notification_deliveries_v1"
+_NOTIFICATION_LAST_UPDATE_META_KEY = "notification_last_update_version_v1"
+_NOTIFICATION_MAX_DELIVERIES = 20
+_NOTIFICATION_TIMEOUT_SECONDS = 5
+_NOTIFICATION_MAX_RETRIES = 3
+_NOTIFICATION_MAX_REDIRECTS = 5
 
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
@@ -566,6 +585,21 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS mobile_access_sessions (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                device_label TEXT NOT NULL DEFAULT '',
+                user_agent TEXT NOT NULL DEFAULT '',
+                client_host TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                last_seen_at REAL NOT NULL,
+                expires_at REAL,
+                revoked_at REAL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS prompt_optimizer_samples (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '',
@@ -634,6 +668,8 @@ def init_db() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_message_feedback_rating ON message_feedback(rating)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_message_feedback_starred ON message_feedback(starred)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_extension_drafts_expires ON extension_drafts(expires_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mobile_access_token ON mobile_access_sessions(token_hash)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mobile_access_expires ON mobile_access_sessions(expires_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_optimizer_samples_task ON prompt_optimizer_samples(task_type, enabled)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_optimizer_samples_updated ON prompt_optimizer_samples(updated_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_prompt_optimizer_rules_task ON prompt_optimizer_rules(task_type, enabled)")
@@ -1167,6 +1203,40 @@ class ExtensionDraftRequest(BaseModel):
 
 class ExtensionTokenRequest(BaseModel):
     reset: Optional[bool] = True
+
+
+class MobileAccessSettingsRequest(BaseModel):
+    enabled: Optional[bool] = False
+
+
+class MobileAccessCodeRequest(BaseModel):
+    ttl_seconds: Optional[int] = _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS
+
+
+class MobileAccessLoginRequest(BaseModel):
+    code: str
+    device_label: Optional[str] = ""
+
+
+class NotificationChannelRequest(BaseModel):
+    id: str
+    type: str
+    name: Optional[str] = ""
+    enabled: Optional[bool] = False
+    url: Optional[str] = ""
+    secret: Optional[str] = ""
+    bot_token: Optional[str] = ""
+    chat_id: Optional[str] = ""
+    events: Optional[List[str]] = None
+
+
+class NotificationSettingsRequest(BaseModel):
+    enabled: Optional[bool] = False
+    channels: Optional[List[NotificationChannelRequest]] = None
+
+
+class NotificationTestRequest(BaseModel):
+    channel_id: str
 
 
 def _proc_sig(
@@ -1927,8 +1997,458 @@ def _app_meta_set(key: str, value: str) -> None:
         )
 
 
+def _app_meta_delete(key: str) -> None:
+    with db_connect() as conn:
+        conn.execute("DELETE FROM app_meta WHERE key = ?", (key,))
+
+
 def _hash_extension_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _hash_secret(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _bool_meta(key: str) -> bool:
+    return _app_meta_get(key) == "1"
+
+
+def _mobile_access_enabled() -> bool:
+    return _bool_meta(_MOBILE_ACCESS_ENABLED_META_KEY)
+
+
+def _request_client_host(request: Request) -> str:
+    return request.client.host if request.client else ""
+
+
+def _is_local_client_host(host: str) -> bool:
+    if not host:
+        return True
+    normalized = host.strip().strip("[]").lower()
+    if normalized in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_local_request(request: Request) -> bool:
+    return _is_local_client_host(_request_client_host(request))
+
+
+def _request_is_https(request: Request) -> bool:
+    if request.url.scheme == "https":
+        return True
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    forwarded = request.headers.get("forwarded") or ""
+    for part in forwarded.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "proto" and value.strip('"').lower() == "https":
+            return True
+    return False
+
+
+def _safe_int(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _mobile_access_clamp_session_ttl(value: object) -> Optional[int]:
+    seconds = _safe_int(value, _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS)
+    if seconds <= 0:
+        return None
+    return max(60, min(seconds, _MOBILE_ACCESS_MAX_SESSION_TTL_SECONDS))
+
+
+def _mobile_access_public_session(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "device_label": row["device_label"] or "",
+        "user_agent": row["user_agent"] or "",
+        "client_host": row["client_host"] or "",
+        "created_at": row["created_at"],
+        "last_seen_at": row["last_seen_at"],
+        "expires_at": row["expires_at"],
+        "revoked_at": row["revoked_at"],
+        "active": not row["revoked_at"] and (row["expires_at"] is None or row["expires_at"] > time.time()),
+    }
+
+
+def _mobile_access_prune() -> None:
+    cutoff = time.time() - 7 * 24 * 60 * 60
+    with db_connect() as conn:
+        conn.execute(
+            """
+            DELETE FROM mobile_access_sessions
+            WHERE (expires_at IS NOT NULL AND expires_at < ?)
+               OR (revoked_at IS NOT NULL AND revoked_at < ?)
+            """,
+            (cutoff, cutoff),
+        )
+
+
+def _mobile_access_sessions() -> List[dict]:
+    _mobile_access_prune()
+    with db_connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, device_label, user_agent, client_host, created_at, last_seen_at, expires_at, revoked_at
+            FROM mobile_access_sessions
+            ORDER BY COALESCE(revoked_at, 0) ASC, last_seen_at DESC
+            LIMIT 50
+            """
+        ).fetchall()
+    return [_mobile_access_public_session(row) for row in rows]
+
+
+def _candidate_lan_ipv4_hosts() -> List[str]:
+    hosts: List[str] = []
+
+    def add_host(value: object) -> None:
+        raw = str(value or "").strip().strip("[]")
+        if not raw:
+            return
+        try:
+            ip = ipaddress.ip_address(raw)
+        except ValueError:
+            return
+        if (
+            ip.version != 4
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_unspecified
+            or not ip.is_private
+        ):
+            return
+        text = str(ip)
+        if text not in hosts:
+            hosts.append(text)
+
+    for target in ("8.8.8.8", "1.1.1.1"):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.connect((target, 80))
+                add_host(sock.getsockname()[0])
+        except OSError:
+            pass
+
+    hostname_candidates = {socket.gethostname()}
+    try:
+        hostname_candidates.add(socket.getfqdn())
+    except OSError:
+        pass
+    for name in hostname_candidates:
+        if not name:
+            continue
+        try:
+            _, _, addresses = socket.gethostbyname_ex(name)
+            for address in addresses:
+                add_host(address)
+        except OSError:
+            pass
+        try:
+            infos = socket.getaddrinfo(name, None, family=socket.AF_INET, type=socket.SOCK_STREAM)
+            for info in infos:
+                add_host(info[4][0])
+        except OSError:
+            pass
+
+    return hosts
+
+
+def _mobile_access_network_payload(request: Request) -> dict:
+    scheme = request.url.scheme or "http"
+    port = request.url.port or (443 if scheme == "https" else 80)
+    current_host = request.url.hostname or "127.0.0.1"
+    current_netloc = request.url.netloc or f"{current_host}:{port}"
+    current_url = f"{scheme}://{current_netloc}"
+    hosts = _candidate_lan_ipv4_hosts()
+    candidate_urls = [f"{scheme}://{host}:{port}" for host in hosts]
+
+    current_is_lan = False
+    try:
+        current_ip = ipaddress.ip_address(current_host.strip("[]"))
+        current_is_lan = (
+            current_ip.version == 4
+            and current_ip.is_private
+            and not current_ip.is_loopback
+            and not current_ip.is_link_local
+            and not current_ip.is_unspecified
+        )
+    except ValueError:
+        current_is_lan = False
+
+    if current_is_lan and current_url not in candidate_urls:
+        candidate_urls.insert(0, current_url)
+        hosts.insert(0, current_host)
+
+    recommended_url = candidate_urls[0] if candidate_urls else ""
+    bind_host = hosts[0] if hosts else ""
+    bind_command = f"claude-web --host {bind_host}" if bind_host else "claude-web --host <本机局域网 IP>"
+    if port != 8765:
+        bind_command += f" --port {port}"
+
+    return {
+        "current_url": current_url,
+        "recommended_url": recommended_url,
+        "candidate_urls": candidate_urls,
+        "bind_host": bind_host,
+        "bind_command": bind_command,
+    }
+
+
+def _mobile_access_code_info() -> Tuple[bool, Optional[float], Optional[int]]:
+    expires_raw = _app_meta_get(_MOBILE_ACCESS_CODE_EXPIRES_META_KEY)
+    ttl_raw = _app_meta_get(_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY)
+    code_hash = _app_meta_get(_MOBILE_ACCESS_CODE_HASH_META_KEY)
+    try:
+        expires_at = float(expires_raw) if expires_raw else None
+    except ValueError:
+        expires_at = None
+    ttl_seconds = _mobile_access_clamp_session_ttl(ttl_raw) if ttl_raw else _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS
+    code_active = bool(code_hash and expires_at and expires_at > time.time())
+    if code_hash and expires_at and expires_at <= time.time():
+        _mobile_access_clear_code()
+    return code_active, expires_at, ttl_seconds
+
+
+def _mobile_access_status_payload(request: Optional[Request] = None) -> dict:
+    code_active, code_expires_at, code_session_ttl = _mobile_access_code_info()
+    payload = {
+        "enabled": _mobile_access_enabled(),
+        "code_active": code_active,
+        "code_expires_at": code_expires_at,
+        "code_session_ttl_seconds": code_session_ttl,
+        "code_ttl_seconds": _MOBILE_ACCESS_CODE_TTL_SECONDS,
+        "default_session_ttl_seconds": _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS,
+        "max_session_ttl_seconds": _MOBILE_ACCESS_MAX_SESSION_TTL_SECONDS,
+        "sessions": _mobile_access_sessions(),
+    }
+    if request is not None:
+        payload.update(_mobile_access_network_payload(request))
+    return payload
+
+
+def _mobile_access_clear_code() -> None:
+    _app_meta_delete(_MOBILE_ACCESS_CODE_HASH_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_CODE_EXPIRES_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY)
+
+
+def _mobile_access_revoke_all() -> None:
+    now = time.time()
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE mobile_access_sessions SET revoked_at = ? WHERE revoked_at IS NULL",
+            (now,),
+        )
+
+
+def _mobile_access_generate_code(request: Request, ttl_seconds: Optional[int]) -> Tuple[str, dict]:
+    if not _mobile_access_enabled():
+        raise HTTPException(status_code=400, detail="mobile access is disabled")
+    session_ttl = _mobile_access_clamp_session_ttl(ttl_seconds)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    _app_meta_set(_MOBILE_ACCESS_CODE_HASH_META_KEY, _hash_secret(code))
+    _app_meta_set(_MOBILE_ACCESS_CODE_EXPIRES_META_KEY, str(time.time() + _MOBILE_ACCESS_CODE_TTL_SECONDS))
+    _app_meta_set(_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY, str(session_ttl or 0))
+    return code, _mobile_access_status_payload(request)
+
+
+def _mobile_login_failure_key(request: Request) -> str:
+    return _request_client_host(request) or "unknown"
+
+
+def _mobile_access_check_rate_limit(request: Request) -> None:
+    now = time.time()
+    key = _mobile_login_failure_key(request)
+    recent = [ts for ts in _mobile_login_failures.get(key, []) if now - ts < _MOBILE_ACCESS_LOGIN_WINDOW_SECONDS]
+    _mobile_login_failures[key] = recent
+    if len(recent) >= _MOBILE_ACCESS_MAX_LOGIN_FAILURES:
+        raise HTTPException(status_code=429, detail="too many login attempts, try again later")
+
+
+def _mobile_access_record_failure(request: Request) -> None:
+    key = _mobile_login_failure_key(request)
+    _mobile_login_failures.setdefault(key, []).append(time.time())
+
+
+def _mobile_access_clear_failures(request: Request) -> None:
+    _mobile_login_failures.pop(_mobile_login_failure_key(request), None)
+
+
+def _mobile_access_issue_session(request: Request, device_label: str, ttl_seconds: Optional[int]) -> Tuple[str, dict]:
+    token = "cwms_" + secrets.token_urlsafe(32)
+    now = time.time()
+    expires_at = None if ttl_seconds is None else now + ttl_seconds
+    session_id = uuid.uuid4().hex
+    user_agent = (request.headers.get("user-agent") or "")[:500]
+    client_host = _request_client_host(request)[:120]
+    label = (device_label or "").strip()[:80]
+    if not label:
+        label = "手机浏览器" if "mobile" in user_agent.lower() else "远程浏览器"
+    with db_connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO mobile_access_sessions (
+                id, token_hash, device_label, user_agent, client_host,
+                created_at, last_seen_at, expires_at, revoked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (session_id, _hash_secret(token), label, user_agent, client_host, now, now, expires_at),
+        )
+    return token, {
+        "id": session_id,
+        "device_label": label,
+        "created_at": now,
+        "last_seen_at": now,
+        "expires_at": expires_at,
+    }
+
+
+def _mobile_access_validate_cookie(request: Request) -> Optional[dict]:
+    token = (request.cookies.get(_MOBILE_ACCESS_COOKIE) or "").strip()
+    if not token:
+        return None
+    token_hash = _hash_secret(token)
+    now = time.time()
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, device_label, user_agent, client_host, created_at, last_seen_at, expires_at, revoked_at
+            FROM mobile_access_sessions
+            WHERE token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["revoked_at"] or (row["expires_at"] is not None and row["expires_at"] <= now):
+            return None
+        conn.execute(
+            "UPDATE mobile_access_sessions SET last_seen_at = ?, client_host = ? WHERE id = ?",
+            (now, _request_client_host(request)[:120], row["id"]),
+        )
+    return _mobile_access_public_session(row)
+
+
+def _mobile_access_auth_required(request: Request) -> bool:
+    if _is_local_request(request):
+        return False
+    path = request.url.path
+    if path.startswith("/api/mobile-access/"):
+        return False
+    if path in {"/mobile-login", "/favicon.ico"}:
+        return False
+    if path == "/changelog.json":
+        return False
+    return path == "/" or path.startswith("/api/") or path.startswith("/uploads/")
+
+
+def _mobile_login_response(request: Request) -> Response:
+    html = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>手机访问授权 · Claude Code Web</title>
+<style>
+:root { color-scheme: light dark; --accent:#c2410c; --bg:#fafaf9; --surface:#fff; --border:#e7e5e4; --text:#1c1917; --muted:#78716c; }
+@media (prefers-color-scheme: dark) { :root { --bg:#0c0a09; --surface:#1c1917; --border:#292524; --text:#fafaf9; --muted:#a8a29e; --accent:#fb923c; } }
+* { box-sizing: border-box; }
+body { margin:0; min-height:100dvh; display:flex; align-items:center; justify-content:center; padding:24px max(18px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(18px, env(safe-area-inset-left)); font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+.box { width:min(420px, 100%); background:var(--surface); border:1px solid var(--border); border-radius:18px; padding:22px; box-shadow:0 18px 50px rgba(28,25,23,.10); }
+.logo { width:44px; height:44px; border-radius:12px; background:linear-gradient(135deg,#fb923c,#c2410c); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:800; margin-bottom:16px; }
+h1 { font-size:20px; margin:0 0 7px; letter-spacing:0; }
+p { color:var(--muted); font-size:13px; line-height:1.6; margin:0 0 18px; }
+label { display:block; font-size:12px; font-weight:700; margin:14px 0 7px; }
+input { width:100%; min-height:48px; border:1px solid var(--border); border-radius:12px; background:var(--bg); color:var(--text); padding:12px 14px; font-size:18px; letter-spacing:.18em; text-align:center; }
+input:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
+@supports not (color: color-mix(in srgb, #000 50%, transparent)) { input:focus { box-shadow:0 0 0 3px rgba(251,146,60,.28); } }
+#deviceLabel { font-size:15px; letter-spacing:0; text-align:left; }
+button { width:100%; min-height:48px; margin-top:16px; border:0; border-radius:12px; background:var(--accent); color:#fff; font-size:15px; font-weight:700; }
+button:disabled { opacity:.6; }
+.msg { min-height:20px; margin-top:12px; font-size:13px; color:var(--muted); }
+.err { color:#dc2626; }
+.hint { margin-top:16px; padding:10px 12px; border-radius:12px; background:var(--bg); border:1px solid var(--border); font-size:12px; color:var(--muted); line-height:1.55; }
+</style>
+</head>
+<body>
+<main class="box">
+  <div class="logo">C</div>
+  <h1>手机访问授权</h1>
+  <p>请输入电脑端设置页生成的 6 位访问码。授权到期后，这台设备会自动退出。</p>
+  <form id="form">
+    <label for="code">访问码</label>
+    <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000" required />
+    <label for="deviceLabel">设备名称</label>
+    <input id="deviceLabel" name="deviceLabel" maxlength="40" placeholder="例如：我的 iPhone" />
+    <button id="submit" type="submit">授权此设备</button>
+    <div id="msg" class="msg"></div>
+  </form>
+  <div class="hint">建议在同 WiFi 下使用电脑本机局域网 IP 访问；远程使用可选 ZeroTier 等私有网络工具。如果访问码已过期，请回到电脑端重新生成。</div>
+</main>
+<script>
+const form = document.getElementById('form');
+const code = document.getElementById('code');
+const label = document.getElementById('deviceLabel');
+const btn = document.getElementById('submit');
+const msg = document.getElementById('msg');
+code.focus();
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = '';
+  msg.className = 'msg';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/mobile-access/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code.value.trim(), device_label: label.value.trim() })
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || '授权失败');
+    msg.textContent = '授权成功，正在进入...';
+    location.href = '/';
+  } catch (err) {
+    msg.textContent = err.message || '授权失败';
+    msg.className = 'msg err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>"""
+    return Response(html, media_type="text/html")
+
+
+@app.middleware("http")
+async def mobile_access_middleware(request: Request, call_next):
+    if _mobile_access_auth_required(request) and not _mobile_access_enabled():
+        if request.url.path == "/" or "text/html" in (request.headers.get("accept") or "").lower():
+            return _mobile_login_response(request)
+        return Response(
+            json.dumps({"detail": "mobile access is disabled"}),
+            status_code=403,
+            media_type="application/json",
+        )
+    if _mobile_access_auth_required(request) and not _mobile_access_validate_cookie(request):
+        if request.url.path == "/" or "text/html" in (request.headers.get("accept") or "").lower():
+            return _mobile_login_response(request)
+        return Response(
+            json.dumps({"detail": "mobile access authorization required"}),
+            status_code=401,
+            media_type="application/json",
+        )
+    return await call_next(request)
+
 
 
 def _extension_token_configured() -> bool:
@@ -1962,6 +2482,53 @@ def _require_local_same_origin(request: Request) -> None:
         same = False
     if not same:
         raise HTTPException(status_code=403, detail="same-origin request required")
+
+
+def _require_local_admin(request: Request) -> None:
+    if not _is_local_request(request):
+        raise HTTPException(status_code=403, detail="this action can only be managed from this computer")
+    _require_local_same_origin(request)
+
+
+def _is_mobile_access_request(request: Request) -> bool:
+    return (not _is_local_request(request)) and bool(_mobile_access_validate_cookie(request))
+
+
+def _require_not_mobile_access(request: Request, detail: str = "this action can only be managed from this computer") -> None:
+    if _is_mobile_access_request(request):
+        raise HTTPException(status_code=403, detail=detail)
+    _require_local_same_origin(request)
+
+
+def _known_cwd_values() -> Set[str]:
+    with db_connect() as conn:
+        rows = conn.execute("SELECT DISTINCT cwd FROM sessions WHERE cwd <> ''").fetchall()
+    values: Set[str] = set()
+    for row in rows:
+        raw = (row["cwd"] or "").strip()
+        if not raw:
+            continue
+        values.add(raw)
+        try:
+            values.add(str(Path(os.path.expanduser(raw)).resolve()))
+        except Exception:
+            pass
+    return values
+
+
+def _require_mobile_cwd_is_known(request: Request, cwd: str) -> None:
+    if not _is_mobile_access_request(request):
+        return
+    raw = (cwd or "").strip()
+    if not raw:
+        return
+    known = _known_cwd_values()
+    try:
+        resolved = str(Path(os.path.expanduser(raw)).resolve())
+    except Exception:
+        resolved = raw
+    if raw not in known and resolved not in known:
+        raise HTTPException(status_code=403, detail="mobile access can only switch to saved project directories")
 
 
 def _generate_extension_token() -> str:
@@ -2010,6 +2577,467 @@ def _extension_install_info() -> dict:
             "在任意网页选中代码或文字，右键 Claude Code Web 提问",
         ],
     }
+
+
+_NOTIFICATION_CHANNEL_PRESETS = [
+    {"id": "feishu", "type": "feishu", "name": "飞书"},
+    {"id": "dingtalk", "type": "dingtalk", "name": "钉钉"},
+    {"id": "wecom", "type": "wecom", "name": "企业微信"},
+    {"id": "slack", "type": "slack", "name": "Slack"},
+    {"id": "discord", "type": "discord", "name": "Discord"},
+    {"id": "telegram", "type": "telegram", "name": "Telegram Bot"},
+    {"id": "custom", "type": "custom", "name": "自定义 Webhook"},
+]
+_NOTIFICATION_EVENT_OPTIONS = [
+    {"id": "agent_loop.done", "name": "Agent Loop 完成"},
+    {"id": "agent_loop.blocked", "name": "Agent Loop 阻塞"},
+    {"id": "agent_loop.stuck", "name": "Agent Loop 重复失败"},
+    {"id": "agent_loop.error", "name": "Agent Loop 出错"},
+    {"id": "version.update_available", "name": "发现新版"},
+    {"id": "chat.error", "name": "聊天错误"},
+]
+_NOTIFICATION_DEFAULT_EVENTS = [
+    "agent_loop.done",
+    "agent_loop.blocked",
+    "agent_loop.stuck",
+    "agent_loop.error",
+    "version.update_available",
+]
+_NOTIFICATION_TYPES = {item["type"] for item in _NOTIFICATION_CHANNEL_PRESETS}
+
+
+def _notification_event_ids() -> Set[str]:
+    return {item["id"] for item in _NOTIFICATION_EVENT_OPTIONS}
+
+
+def _notification_default_channel(preset: dict) -> dict:
+    events = list(_NOTIFICATION_DEFAULT_EVENTS)
+    return {
+        "id": preset["id"],
+        "type": preset["type"],
+        "name": preset["name"],
+        "enabled": False,
+        "url": "",
+        "secret": "",
+        "bot_token": "",
+        "chat_id": "",
+        "events": events,
+    }
+
+
+def _sanitize_notification_channel(raw: dict) -> dict:
+    if not isinstance(raw, dict):
+        raw = {}
+    channel_type = str(raw.get("type") or raw.get("id") or "custom").strip().lower()
+    if channel_type not in _NOTIFICATION_TYPES:
+        channel_type = "custom"
+    channel_id = str(raw.get("id") or channel_type or uuid.uuid4().hex).strip()[:64] or uuid.uuid4().hex
+    known_events = _notification_event_ids()
+    raw_events = raw.get("events")
+    events = [str(item).strip() for item in raw_events] if isinstance(raw_events, list) else list(_NOTIFICATION_DEFAULT_EVENTS)
+    events = [item for item in events if item in known_events]
+    if not events:
+        events = list(_NOTIFICATION_DEFAULT_EVENTS)
+    return {
+        "id": re.sub(r"[^A-Za-z0-9_.:-]+", "-", channel_id),
+        "type": channel_type,
+        "name": str(raw.get("name") or channel_type).strip()[:80],
+        "enabled": bool(raw.get("enabled")),
+        "url": str(raw.get("url") or "").strip()[:1200],
+        "secret": str(raw.get("secret") or "").strip()[:500],
+        "bot_token": str(raw.get("bot_token") or "").strip()[:500],
+        "chat_id": str(raw.get("chat_id") or "").strip()[:200],
+        "events": events,
+    }
+
+
+def _notification_public_channel(channel: dict) -> dict:
+    item = dict(channel)
+    item["secret_configured"] = bool(item.get("secret"))
+    item["bot_token_configured"] = bool(item.get("bot_token"))
+    item["secret"] = ""
+    item["bot_token"] = ""
+    return item
+
+
+def _notification_load_settings(redact: bool = True) -> dict:
+    raw = _app_meta_get(_NOTIFICATION_SETTINGS_META_KEY)
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    saved_channels = data.get("channels") if isinstance(data.get("channels"), list) else []
+    by_id = {}
+    for item in saved_channels:
+        channel = _sanitize_notification_channel(item)
+        by_id[channel["id"]] = channel
+    channels = []
+    for preset in _NOTIFICATION_CHANNEL_PRESETS:
+        channel = by_id.pop(preset["id"], _notification_default_channel(preset))
+        channel["type"] = preset["type"]
+        channel["name"] = channel.get("name") or preset["name"]
+        channels.append(channel)
+    channels.extend(by_id.values())
+    result = {
+        "enabled": bool(data.get("enabled")),
+        "channels": channels,
+    }
+    if redact:
+        result["channels"] = [_notification_public_channel(channel) for channel in channels]
+    return result
+
+
+def _notification_merge_secret_fields(incoming: dict, existing: dict) -> dict:
+    merged = dict(incoming)
+    if not merged.get("secret") and existing.get("secret"):
+        merged["secret"] = existing.get("secret") or ""
+    if not merged.get("bot_token") and existing.get("bot_token"):
+        merged["bot_token"] = existing.get("bot_token") or ""
+    return merged
+
+
+def _notification_save_settings(payload: NotificationSettingsRequest) -> dict:
+    current = _notification_load_settings(redact=False)
+    current_by_id = {item["id"]: item for item in current.get("channels", [])}
+    channels = []
+    for item in payload.channels or []:
+        raw = item.dict()
+        sanitized = _sanitize_notification_channel(raw)
+        existing = current_by_id.get(sanitized["id"], {})
+        channels.append(_notification_merge_secret_fields(sanitized, existing))
+    if not channels:
+        channels = current.get("channels") or [
+            _notification_default_channel(preset)
+            for preset in _NOTIFICATION_CHANNEL_PRESETS
+        ]
+    data = {
+        "enabled": bool(payload.enabled),
+        "channels": channels,
+    }
+    _app_meta_set(_NOTIFICATION_SETTINGS_META_KEY, json.dumps(data, ensure_ascii=False))
+    return _notification_load_settings(redact=True)
+
+
+def _notification_load_deliveries() -> List[dict]:
+    raw = _app_meta_get(_NOTIFICATION_DELIVERIES_META_KEY)
+    try:
+        data = json.loads(raw) if raw else []
+    except Exception:
+        data = []
+    return data if isinstance(data, list) else []
+
+
+def _notification_record_delivery(entry: dict) -> None:
+    deliveries = _notification_load_deliveries()
+    deliveries.insert(0, entry)
+    deliveries = deliveries[:_NOTIFICATION_MAX_DELIVERIES]
+    _app_meta_set(_NOTIFICATION_DELIVERIES_META_KEY, json.dumps(deliveries, ensure_ascii=False))
+
+
+def _notification_format_text(event: str, payload: dict) -> str:
+    title = str(payload.get("title") or "Claude Code Web 通知").strip()
+    message = str(payload.get("message") or "").strip()
+    status = str(payload.get("status") or "").strip()
+    parts = [f"{title}"]
+    if message:
+        parts.append(message)
+    if status:
+        parts.append(f"状态：{status}")
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id:
+        parts.append(f"会话：{session_id[:8]}")
+    cwd = str(payload.get("cwd") or "").strip()
+    if cwd:
+        parts.append(f"目录：{cwd}")
+    parts.append(f"事件：{event}")
+    return "\n".join(parts)
+
+
+def _notification_is_public_host(host: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(host.strip("[]"))
+        return ip.is_global
+    except ValueError:
+        pass
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            return False
+        try:
+            ip = ipaddress.ip_address(str(sockaddr[0]).strip("[]"))
+        except ValueError:
+            return False
+        if not ip.is_global:
+            return False
+    return True
+
+
+def _notification_require_http_url(url: str, channel_name: str) -> str:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{channel_name} 需要有效的 http(s) URL")
+    if not parsed.hostname or not _notification_is_public_host(parsed.hostname):
+        raise ValueError(f"{channel_name} Webhook 不能指向本机、内网或保留地址")
+    return url
+
+
+def _notification_custom_payload(event: str, payload: dict) -> dict:
+    return {
+        "event": event,
+        "app": "claude-web",
+        "version": __version__,
+        "payload": payload,
+        "ts": time.time(),
+    }
+
+
+def _notification_signed_dingtalk_url(url: str, secret: str) -> str:
+    if not secret:
+        return url
+    timestamp = str(int(time.time() * 1000))
+    sign_src = f"{timestamp}\n{secret}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), sign_src, hashlib.sha256).digest()
+    sign = base64.b64encode(digest).decode("utf-8")
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}{urlencode({'timestamp': timestamp, 'sign': sign})}"
+
+
+def _notification_signed_feishu_url(url: str, secret: str) -> Tuple[str, Optional[dict]]:
+    if not secret:
+        return url, None
+    timestamp = str(int(time.time()))
+    sign_src = f"{timestamp}\n{secret}".encode("utf-8")
+    digest = hmac.new(sign_src, b"", hashlib.sha256).digest()
+    return url, {"timestamp": timestamp, "sign": base64.b64encode(digest).decode("utf-8")}
+
+
+def _notification_build_request(channel: dict, event: str, payload: dict) -> Tuple[str, bytes, Dict[str, str]]:
+    channel_type = channel.get("type") or "custom"
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": f"claude-web-ui/{__version__}",
+        "X-Claude-Web-Event": event,
+    }
+    text = _notification_format_text(event, payload)
+    url = (channel.get("url") or "").strip()
+    if channel_type == "telegram":
+        token = (channel.get("bot_token") or "").strip()
+        chat_id = (channel.get("chat_id") or "").strip()
+        if not token or not chat_id:
+            raise ValueError("Telegram Bot 需要 bot_token 和 chat_id")
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        body = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    elif channel_type == "feishu":
+        if not url:
+            raise ValueError("飞书需要 Webhook URL")
+        url = _notification_require_http_url(url, "飞书")
+        url, signed = _notification_signed_feishu_url(url, channel.get("secret") or "")
+        body = {"msg_type": "text", "content": {"text": text}}
+        if signed:
+            body.update(signed)
+    elif channel_type == "dingtalk":
+        if not url:
+            raise ValueError("钉钉需要 Webhook URL")
+        url = _notification_require_http_url(url, "钉钉")
+        url = _notification_signed_dingtalk_url(url, channel.get("secret") or "")
+        body = {"msgtype": "text", "text": {"content": text}}
+    elif channel_type == "wecom":
+        if not url:
+            raise ValueError("企业微信需要 Webhook URL")
+        url = _notification_require_http_url(url, "企业微信")
+        body = {"msgtype": "text", "text": {"content": text}}
+    elif channel_type == "slack":
+        if not url:
+            raise ValueError("Slack 需要 Webhook URL")
+        url = _notification_require_http_url(url, "Slack")
+        body = {"text": text}
+    elif channel_type == "discord":
+        if not url:
+            raise ValueError("Discord 需要 Webhook URL")
+        url = _notification_require_http_url(url, "Discord")
+        body = {"content": text[:1900]}
+    else:
+        if not url:
+            raise ValueError("自定义 Webhook 需要 URL")
+        url = _notification_require_http_url(url, "自定义 Webhook")
+        body = _notification_custom_payload(event, payload)
+        secret = (channel.get("secret") or "").strip()
+        if secret:
+            raw = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            headers["X-Claude-Web-Signature"] = "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+            return url, raw, headers
+    return url, json.dumps(body, ensure_ascii=False).encode("utf-8"), headers
+
+
+def _notification_post_once(channel: dict, event: str, payload: dict) -> dict:
+    url, body, headers = _notification_build_request(channel, event, payload)
+    current_url = _notification_require_http_url(url, channel.get("name") or channel.get("type") or "Webhook")
+    try:
+        for _ in range(_NOTIFICATION_MAX_REDIRECTS + 1):
+            req = urllib.request.Request(current_url, data=body, headers=headers, method="POST")
+            try:
+                with _NO_REDIRECT_OPENER.open(req, timeout=_NOTIFICATION_TIMEOUT_SECONDS) as resp:
+                    response_body = resp.read(600).decode("utf-8", errors="replace")
+                    return {"status_code": int(getattr(resp, "status", 200)), "response": response_body}
+            except urllib.error.HTTPError as e:
+                if e.code not in _REDIRECT_STATUS_CODES:
+                    raise
+                location = e.headers.get("Location")
+                if not location:
+                    raise ValueError("webhook redirect missing Location")
+                current_url = _notification_require_http_url(
+                    urljoin(current_url, location),
+                    channel.get("name") or channel.get("type") or "Webhook",
+                )
+        raise ValueError("webhook redirect limit exceeded")
+    except urllib.error.HTTPError as e:
+        try:
+            response_body = e.read(600).decode("utf-8", errors="replace")
+        except Exception:
+            response_body = ""
+        return {"status_code": int(getattr(e, "code", 0) or 0), "response": response_body}
+
+
+async def _notification_deliver_channel(channel: dict, event: str, payload: dict) -> dict:
+    delivery_id = uuid.uuid4().hex[:12]
+    started = time.time()
+    ok = False
+    error = ""
+    status_code = None
+    response_preview = ""
+    attempts = 0
+    for attempt in range(1, _NOTIFICATION_MAX_RETRIES + 1):
+        attempts = attempt
+        try:
+            result = await asyncio.to_thread(_notification_post_once, channel, event, payload)
+            status_code = result.get("status_code")
+            response_preview = _clip_text(result.get("response") or "", 300)
+            ok = 200 <= int(status_code or 0) < 300
+            if ok:
+                break
+            error = f"HTTP {status_code}"
+        except Exception as e:
+            error = str(e)
+        if attempt < _NOTIFICATION_MAX_RETRIES:
+            await asyncio.sleep(0.5 * attempt)
+    entry = {
+        "id": delivery_id,
+        "ts": started,
+        "duration_ms": int((time.time() - started) * 1000),
+        "event": event,
+        "channel_id": channel.get("id"),
+        "channel_type": channel.get("type"),
+        "channel_name": channel.get("name"),
+        "ok": ok,
+        "attempts": attempts,
+        "status_code": status_code,
+        "error": _clip_text(error, 500),
+        "response": response_preview,
+    }
+    _notification_record_delivery(entry)
+    return entry
+
+
+def _notification_payload(title: str, message: str, **extra) -> dict:
+    payload = {
+        "title": title,
+        "message": message,
+        "status": extra.pop("status", ""),
+        "session_id": extra.pop("session_id", ""),
+        "cwd": extra.pop("cwd", ""),
+    }
+    payload.update(extra)
+    return payload
+
+
+async def _notification_send_event(event: str, payload: dict) -> None:
+    settings = _notification_load_settings(redact=False)
+    if not settings.get("enabled"):
+        return
+    tasks = []
+    for channel in settings.get("channels") or []:
+        if not channel.get("enabled"):
+            continue
+        if event not in (channel.get("events") or []):
+            continue
+        tasks.append(asyncio.create_task(_notification_deliver_channel(channel, event, payload)))
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _notification_has_subscribers(event: str) -> bool:
+    settings = _notification_load_settings(redact=False)
+    if not settings.get("enabled"):
+        return False
+    for channel in settings.get("channels") or []:
+        if channel.get("enabled") and event in (channel.get("events") or []):
+            return True
+    return False
+
+
+def _notification_fire_and_forget(event: str, payload: dict) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_notification_send_event(event, payload))
+    except RuntimeError:
+        asyncio.run(_notification_send_event(event, payload))
+
+
+def _notification_agent_loop_event(status: str) -> str:
+    if status == "error":
+        return "agent_loop.error"
+    if status == "blocked":
+        return "agent_loop.blocked"
+    if status in {"done", "budget", "turn_limit"}:
+        return "agent_loop.done"
+    return ""
+
+
+def _notification_maybe_send_update(data: dict) -> None:
+    if not isinstance(data, dict) or not data.get("update_available"):
+        return
+    latest = str(data.get("latest_version") or "").strip()
+    if not latest:
+        return
+    if not _notification_has_subscribers("version.update_available"):
+        return
+    if _app_meta_get(_NOTIFICATION_LAST_UPDATE_META_KEY) == latest:
+        return
+    _app_meta_set(_NOTIFICATION_LAST_UPDATE_META_KEY, latest)
+    _notification_fire_and_forget(
+        "version.update_available",
+        _notification_payload(
+            "Claude Code Web 发现新版",
+            f"当前 v{data.get('current_version') or __version__}，最新版 v{latest}",
+            status="update_available",
+            latest_version=latest,
+            current_version=data.get("current_version") or __version__,
+            command=data.get("command") or "pip install --upgrade claude-web-ui",
+            url=data.get("url") or "https://pypi.org/project/claude-web-ui/",
+        ),
+    )
+
+
+def _notification_send_chat_error(session_id: str, cwd: str, err_event: dict) -> None:
+    message = str((err_event or {}).get("message") or "聊天出错").strip()
+    _notification_fire_and_forget(
+        "chat.error",
+        _notification_payload(
+            "Claude Code Web 聊天出错",
+            _clip_text(message, 800),
+            status="error",
+            session_id=session_id,
+            cwd=cwd,
+            error_type=(err_event or {}).get("type") or "error",
+        ),
+    )
 
 
 def _extension_zip_response() -> StreamingResponse:
@@ -2753,8 +3781,37 @@ def iter_session_compact_backups(session_id: str) -> List[Path]:
         return []
 
 
+def _mobile_safe_chat_request(request: Request, req: ChatRequest) -> ChatRequest:
+    if not _is_mobile_access_request(request):
+        return req
+    session_id = (req.session_id or "").strip()
+    stored_cwd = ""
+    if session_id:
+        with db_connect() as conn:
+            row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            stored_cwd = (row["cwd"] if row and row["cwd"] else "").strip()
+    work_dir = (req.cwd or stored_cwd or "").strip()
+    if work_dir:
+        _require_mobile_cwd_is_known(request, work_dir)
+    else:
+        work_dir = str(_DATA_DIR)
+    if req.permission_mode in {"acceptEdits", "bypassPermissions"} or req.allowed_tools:
+        raise HTTPException(status_code=403, detail="mobile access only supports safe chat permissions")
+    return req.copy(update={
+        "cwd": work_dir,
+        "permission_mode": "default",
+        "allowed_tools": None,
+        "disallowed_tools": req.disallowed_tools or None,
+        "system_prompt": None,
+    })
+
+
 @app.post("/api/chat")
-async def chat(req: ChatRequest):
+async def chat(request: Request, req: ChatRequest):
+    return await _chat_response(_mobile_safe_chat_request(request, req))
+
+
+async def _chat_response(req: ChatRequest):
     session_id = req.session_id or str(uuid.uuid4())
     if session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is compacting")
@@ -2871,6 +3928,7 @@ async def chat(req: ChatRequest):
             except FileNotFoundError:
                 err_event = {"type": "error", "message": "claude CLI not found in PATH"}
                 append_event(session_id, err_event)
+                _notification_send_chat_error(session_id, work_dir, err_event)
                 yield f"data: {json.dumps(err_event)}\n\n"
                 return
             write_lock = asyncio.Lock()
@@ -2902,6 +3960,7 @@ async def chat(req: ChatRequest):
                 except ValueError as e:
                     err_event = {"type": "error", "message": f"stdout line too large: {e}"}
                     append_event(session_id, err_event)
+                    _notification_send_chat_error(session_id, work_dir, err_event)
                     yield f"data: {json.dumps(err_event)}\n\n"
                     break
                 if not raw:
@@ -2957,6 +4016,7 @@ async def chat(req: ChatRequest):
                     err_text = bytes(stderr_buffer).decode("utf-8", errors="replace")
                     err_event = classify_claude_error(err_text or f"claude exited with code {rc}")
                     append_event(session_id, err_event)
+                    _notification_send_chat_error(session_id, work_dir, err_event)
                     yield f"data: {json.dumps(err_event, ensure_ascii=False)}\n\n"
         finally:
             if stderr_task is not None and not stderr_task.done():
@@ -3226,6 +4286,32 @@ def _agent_loop_continue_prompt(goal: str, turn: int, max_turns: int, used_token
     return "\n".join(lines)
 
 
+def _agent_loop_done_test_retry_prompt(goal: str, turn: int, max_turns: int, used_tokens: int, token_budget: int, test_command: str, test_result: dict, retry_index: int, max_retries: int) -> str:
+    lines = [
+        "继续 Agent Loop：上一轮你输出了 AGENT_LOOP_DONE，但后端自动测试没有通过。",
+        "",
+        f"目标：{goal}",
+        f"当前进度：仍在第 {turn} / {max_turns} 轮的完成校验阶段。已用约 {used_tokens} / {token_budget} tokens。",
+        f"这是完成后测试失败的第 {retry_index} / {max_retries} 次自动返工。",
+        "",
+        "后端自动测试结果：",
+        f"命令：{test_result.get('command') or test_command}",
+        f"退出码：{test_result.get('returncode')}",
+        f"是否超时：{'是' if test_result.get('timed_out') else '否'}",
+    ]
+    stdout = _clip_text(test_result.get("stdout") or "", 6000)
+    stderr = _clip_text(test_result.get("stderr") or "", 4000)
+    if stdout:
+        lines.extend(["", "stdout：", "```text", stdout, "```"])
+    if stderr:
+        lines.extend(["", "stderr：", "```text", stderr, "```"])
+    lines.extend([
+        "",
+        "请修复测试失败原因，并在确认测试通过后才再次输出 AGENT_LOOP_DONE。若你判断无法继续，请写：AGENT_LOOP_BLOCKED。",
+    ])
+    return "\n".join(lines)
+
+
 async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeout: int = 120) -> dict:
     started = time.time()
     result = {
@@ -3269,7 +4355,7 @@ async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeou
 
 
 async def _agent_loop_chat_turn(job: AgentLoopJob, req: ChatRequest, turn: int) -> dict:
-    response = await chat(req)
+    response = await _chat_response(req)
     last_result = None
     assistant_text: List[str] = []
     stream_error = None
@@ -3317,12 +4403,13 @@ async def _agent_loop_chat_turn(job: AgentLoopJob, req: ChatRequest, turn: int) 
 async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> None:
     final_status = "done"
     final_message = "Agent Loop 已完成"
+    cwd = (req.cwd or "").strip()
+    goal = (req.goal or "").strip()
+    last_notification_event = ""
     try:
-        goal = (req.goal or "").strip()
         max_turns = max(1, min(int(req.max_turns or 5), 20))
         token_budget = max(1000, min(int(req.token_budget or 30000), 1_000_000))
         test_command = _normalize_agent_loop_test_command(req.test_command or "")
-        cwd = (req.cwd or "").strip()
         if not cwd:
             with db_connect() as conn:
                 row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (job.session_id,)).fetchone()
@@ -3340,6 +4427,8 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
         last_test_result = None
         last_error = None
         retry_count = 0
+        done_test_retry_count = 0
+        force_done_test_retry = False
         prior_failure_sig = None
         repeated_failure_count = 0
         await _agent_loop_emit(job, {"type": "agent_loop_started", "job_id": job.id, "session_id": job.session_id, "max_turns": max_turns, "token_budget": token_budget, "test_command": test_command, "test_command_source": test_command_source})
@@ -3349,7 +4438,13 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
                 final_status = "stopped"
                 final_message = "Agent Loop 已停止"
                 break
-            if last_error is not None:
+            if force_done_test_retry and last_test_result is not None:
+                done_test_retry_count += 1
+                prompt = _agent_loop_done_test_retry_prompt(goal, turn, max_turns, used_tokens, token_budget, test_command, last_test_result, done_test_retry_count, _AGENT_LOOP_MAX_RETRIES)
+                display = f"测试未通过，继续修复（{done_test_retry_count}/{_AGENT_LOOP_MAX_RETRIES}）：{goal}"
+                await _agent_loop_emit(job, {"type": "agent_loop_retry", "turn": turn, "retry": done_test_retry_count, "max_retries": _AGENT_LOOP_MAX_RETRIES, "reason": "done_test_failed", "test_result": last_test_result})
+                force_done_test_retry = False
+            elif last_error is not None:
                 retry_count += 1
                 prompt = _agent_loop_failure_retry_prompt(goal, turn, max_turns, used_tokens, token_budget, test_command, last_error, retry_count, _AGENT_LOOP_MAX_RETRIES)
                 display = f"重试 Agent Loop（{retry_count}/{_AGENT_LOOP_MAX_RETRIES}）：{goal}"
@@ -3385,13 +4480,14 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
                 break
             if not result.get("ok"):
                 last_error = result.get("error") or {"type": "error", "message": "unknown Agent Loop turn failure"}
-                if retry_count >= _AGENT_LOOP_MAX_RETRIES or turn >= max_turns:
+                if retry_count >= _AGENT_LOOP_MAX_RETRIES:
                     final_status = "blocked"
                     final_message = "Agent Loop 连续失败，可能需要人工介入"
                     await _agent_loop_emit(job, {"type": "agent_loop_blocked", "reason": "turn_error_retries_exhausted", "turn": turn, "error": last_error})
                     break
                 continue
             last_error = None
+            retry_count = 0
             text = result.get("text") or ""
             done_signal = bool(re.search(r"\bAGENT_LOOP_DONE\b", text, re.I))
             blocked_signal = bool(re.search(r"\bAGENT_LOOP_BLOCKED\b", text, re.I))
@@ -3416,9 +4512,17 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
                     break
                 if done_signal and last_test_result.get("returncode") != 0:
                     await _agent_loop_emit(job, {"type": "agent_loop_test_failed_after_done", "turn": turn})
+                    if done_test_retry_count >= _AGENT_LOOP_MAX_RETRIES:
+                        final_status = "blocked"
+                        final_message = "Agent Loop 宣称完成但测试仍未通过，可能需要人工介入"
+                        await _agent_loop_emit(job, {"type": "agent_loop_blocked", "reason": "done_test_retries_exhausted", "turn": turn, "returncode": last_test_result.get("returncode")})
+                        break
+                    force_done_test_retry = True
+                    continue
                 if repeated_failure_count >= _AGENT_LOOP_STUCK_THRESHOLD:
                     final_status = "blocked"
                     final_message = "Agent Loop 连续遇到相同测试失败，可能需要人工介入"
+                    last_notification_event = "agent_loop.stuck"
                     await _agent_loop_emit(job, {"type": "agent_loop_stuck", "turn": turn, "repeat_count": repeated_failure_count, "returncode": last_test_result.get("returncode")})
                     break
             elif done_signal:
@@ -3446,6 +4550,19 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
             except ProcessLookupError:
                 pass
         await _agent_loop_emit(job, {"type": "agent_loop_done", "status": final_status, "message": final_message, "session_id": job.session_id})
+        event_name = last_notification_event or _notification_agent_loop_event(final_status)
+        if event_name:
+            _notification_fire_and_forget(
+                event_name,
+                _notification_payload(
+                    "Agent Loop 已结束",
+                    final_message,
+                    status=final_status,
+                    session_id=job.session_id,
+                    cwd=cwd,
+                    goal=_clip_text(goal, 800),
+                ),
+            )
 
 
 @app.get("/api/agent-loop/active")
@@ -3462,7 +4579,17 @@ async def active_agent_loop(session_id: str = Query(default="")):
 
 
 @app.post("/api/agent-loop/start")
-async def start_agent_loop(req: AgentLoopStartRequest):
+async def start_agent_loop(request: Request, req: AgentLoopStartRequest):
+    if _is_mobile_access_request(request):
+        if req.permission_mode in {"acceptEdits", "bypassPermissions"} or req.allowed_tools or (req.test_command or "").strip():
+            raise HTTPException(status_code=403, detail="mobile access can only start safe agent loops")
+        if req.cwd:
+            _require_mobile_cwd_is_known(request, req.cwd)
+        req.permission_mode = "default"
+        req.allowed_tools = None
+        req.disallowed_tools = req.disallowed_tools or None
+        req.system_prompt = None
+        req.test_command = ""
     goal = (req.goal or "").strip()
     if not goal:
         raise HTTPException(status_code=400, detail="goal required")
@@ -3556,13 +4683,142 @@ async def stop_chat(session_id: str):
 
 
 @app.get("/api/extension/status")
-async def extension_status():
-    return {**_extension_status_payload(), **_extension_install_info()}
+async def extension_status(request: Request):
+    return {**_extension_status_payload(), **_extension_install_info(), "local": _is_local_request(request)}
 
 
 @app.get("/api/extension/install-info")
 async def extension_install_info():
     return _extension_install_info()
+
+
+@app.get("/api/mobile-access/status")
+async def mobile_access_status(request: Request):
+    if not _is_local_request(request):
+        return {
+            "enabled": _mobile_access_enabled(),
+            "authorized": bool(_mobile_access_validate_cookie(request)),
+            "local": False,
+        }
+    return {**_mobile_access_status_payload(request), "local": True}
+
+
+@app.get("/mobile-login")
+async def mobile_login(request: Request):
+    return _mobile_login_response(request)
+
+
+@app.put("/api/mobile-access/settings")
+async def mobile_access_settings(request: Request, req: MobileAccessSettingsRequest):
+    _require_local_admin(request)
+    enabled = bool(req.enabled)
+    _app_meta_set(_MOBILE_ACCESS_ENABLED_META_KEY, "1" if enabled else "0")
+    if not enabled:
+        _mobile_access_clear_code()
+        _mobile_access_revoke_all()
+    return _mobile_access_status_payload(request)
+
+
+@app.post("/api/mobile-access/code")
+async def mobile_access_code(request: Request, req: MobileAccessCodeRequest):
+    _require_local_admin(request)
+    code, payload = _mobile_access_generate_code(request, req.ttl_seconds)
+    return {**payload, "code": code}
+
+
+@app.post("/api/mobile-access/login")
+async def mobile_access_login(request: Request, req: MobileAccessLoginRequest):
+    if not _mobile_access_enabled():
+        raise HTTPException(status_code=403, detail="mobile access is disabled")
+    _mobile_access_check_rate_limit(request)
+    code = re.sub(r"\D", "", req.code or "")
+    code_active, code_expires_at, session_ttl = _mobile_access_code_info()
+    stored = _app_meta_get(_MOBILE_ACCESS_CODE_HASH_META_KEY)
+    if not code_active or not stored or not hmac.compare_digest(_hash_secret(code), stored):
+        _mobile_access_record_failure(request)
+        raise HTTPException(status_code=401, detail="invalid or expired access code")
+    _mobile_access_clear_code()
+    _mobile_access_clear_failures(request)
+    token, session = _mobile_access_issue_session(request, req.device_label or "", session_ttl)
+    response = Response(
+        json.dumps({"ok": True, "session": session, "code_expires_at": code_expires_at}),
+        media_type="application/json",
+    )
+    cookie_max_age = session_ttl if session_ttl is not None else 10 * 365 * 24 * 60 * 60
+    response.set_cookie(
+        _MOBILE_ACCESS_COOKIE,
+        token,
+        max_age=cookie_max_age,
+        httponly=True,
+        samesite="lax",
+        secure=_request_is_https(request),
+        path="/",
+    )
+    return response
+
+
+@app.delete("/api/mobile-access/sessions/{session_id}")
+async def mobile_access_revoke_session(request: Request, session_id: str):
+    _require_local_admin(request)
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE mobile_access_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (time.time(), session_id),
+        )
+    return _mobile_access_status_payload(request)
+
+
+@app.post("/api/mobile-access/revoke-all")
+async def mobile_access_revoke_all(request: Request):
+    _require_local_admin(request)
+    _mobile_access_clear_code()
+    _mobile_access_revoke_all()
+    return _mobile_access_status_payload(request)
+
+
+@app.get("/api/notifications/settings")
+async def get_notification_settings():
+    return {
+        **_notification_load_settings(redact=True),
+        "presets": _NOTIFICATION_CHANNEL_PRESETS,
+        "events": _NOTIFICATION_EVENT_OPTIONS,
+        "default_events": _NOTIFICATION_DEFAULT_EVENTS,
+    }
+
+
+@app.put("/api/notifications/settings")
+async def put_notification_settings(request: Request, req: NotificationSettingsRequest):
+    _require_not_mobile_access(request)
+    return {
+        **_notification_save_settings(req),
+        "presets": _NOTIFICATION_CHANNEL_PRESETS,
+        "events": _NOTIFICATION_EVENT_OPTIONS,
+        "default_events": _NOTIFICATION_DEFAULT_EVENTS,
+    }
+
+
+@app.get("/api/notifications/deliveries")
+async def get_notification_deliveries():
+    return {"deliveries": _notification_load_deliveries()}
+
+
+@app.post("/api/notifications/test")
+async def test_notification(request: Request, req: NotificationTestRequest):
+    _require_not_mobile_access(request)
+    channel_id = (req.channel_id or "").strip()
+    settings = _notification_load_settings(redact=False)
+    channel = next((item for item in settings.get("channels") or [] if item.get("id") == channel_id), None)
+    if channel is None:
+        raise HTTPException(status_code=404, detail="notification channel not found")
+    payload = _notification_payload(
+        "Claude Code Web 测试通知",
+        f"{channel.get('name') or channel.get('type')} 已连接。",
+        status="test",
+    )
+    delivery = await _notification_deliver_channel(channel, "notification.test", payload)
+    if not delivery.get("ok"):
+        raise HTTPException(status_code=502, detail=delivery.get("error") or "notification delivery failed")
+    return {"ok": True, "delivery": delivery}
 
 
 @app.get("/api/extension/package")
@@ -3572,7 +4828,7 @@ async def extension_package():
 
 @app.post("/api/extension/token")
 async def extension_token(request: Request, _req: ExtensionTokenRequest):
-    _require_local_same_origin(request)
+    _require_local_admin(request)
     token = _generate_extension_token()
     return {**_extension_status_payload(), "token": token}
 
@@ -3598,7 +4854,7 @@ async def extension_ask(
         disallowed_tools=disallowed_tools,
         force_new=not bool((req.session_id or "").strip()),
     )
-    response = await chat(chat_req)
+    response = await _chat_response(chat_req)
     meta = {
         "type": "extension_meta",
         "session_id": session_id,
@@ -3643,12 +4899,13 @@ async def create_extension_draft(
 
 @app.get("/api/extension/drafts/{draft_id}")
 async def get_extension_draft(request: Request, draft_id: str):
-    _require_local_same_origin(request)
+    _require_not_mobile_access(request)
     return _load_extension_draft(draft_id)
 
 
 @app.post("/api/sessions/{session_id}/prepare-fork")
-async def prepare_fork(session_id: str, req: ForkRequest):
+async def prepare_fork(request: Request, session_id: str, req: ForkRequest):
+    _require_not_mobile_access(request)
     if session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is compacting")
     events = load_events(session_id)
@@ -3696,7 +4953,8 @@ async def prepare_fork(session_id: str, req: ForkRequest):
 
 
 @app.post("/api/sessions/{session_id}/prepare-inline-edit")
-async def prepare_inline_edit(session_id: str, req: ForkRequest):
+async def prepare_inline_edit(request: Request, session_id: str, req: ForkRequest):
+    _require_not_mobile_access(request)
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
 
@@ -3742,7 +5000,8 @@ async def prepare_inline_edit(session_id: str, req: ForkRequest):
 
 
 @app.post("/api/sessions/{session_id}/restore-checkpoint")
-async def restore_checkpoint(session_id: str, req: RestoreRequest):
+async def restore_checkpoint(request: Request, session_id: str, req: RestoreRequest):
+    _require_not_mobile_access(request)
     events = load_events(session_id)
     user_event_positions = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
     if req.event_index < 0 or req.event_index >= len(user_event_positions):
@@ -4179,7 +5438,8 @@ EXEC_LANG_MAP: Dict[str, List[str]] = {
 
 
 @app.post("/api/exec-code")
-async def exec_code(req: ExecCodeRequest):
+async def exec_code(request: Request, req: ExecCodeRequest):
+    _require_not_mobile_access(request)
     lang = (req.language or "").lower().strip()
     cmd = EXEC_LANG_MAP.get(lang)
     if cmd is None:
@@ -4307,7 +5567,8 @@ async def scan_cli_sessions_api(cwd: str = Query(default="")):
 
 
 @app.post("/api/cli-sessions/import")
-async def import_cli_sessions_api(req: CliSessionImportRequest):
+async def import_cli_sessions_api(request: Request, req: CliSessionImportRequest):
+    _require_not_mobile_access(request)
     return import_cli_sessions(req.session_ids, req.cwd or "", req.paths)
 
 
@@ -4488,7 +5749,8 @@ async def prompt_optimizer_dashboard():
 
 
 @app.post("/api/prompt-optimizer/samples")
-async def prompt_optimizer_create_sample(req: PromptOptimizerSampleRequest):
+async def prompt_optimizer_create_sample(request: Request, req: PromptOptimizerSampleRequest):
+    _require_not_mobile_access(request)
     prompt = _clip_text(req.prompt, 12000)
     if not prompt:
         raise HTTPException(status_code=400, detail="prompt required")
@@ -4535,7 +5797,8 @@ async def prompt_optimizer_create_sample(req: PromptOptimizerSampleRequest):
 
 
 @app.post("/api/prompt-optimizer/samples/from-session")
-async def prompt_optimizer_create_sample_from_session(req: PromptOptimizerSessionSampleRequest):
+async def prompt_optimizer_create_sample_from_session(request: Request, req: PromptOptimizerSessionSampleRequest):
+    _require_not_mobile_access(request)
     source_session_id = (req.session_id or "").strip()
     if not source_session_id:
         raise HTTPException(status_code=400, detail="session_id required")
@@ -4592,7 +5855,8 @@ async def prompt_optimizer_create_sample_from_session(req: PromptOptimizerSessio
 
 
 @app.delete("/api/prompt-optimizer/samples/{sample_id}")
-async def prompt_optimizer_delete_sample(sample_id: str):
+async def prompt_optimizer_delete_sample(request: Request, sample_id: str):
+    _require_not_mobile_access(request)
     with db_connect() as conn:
         row = conn.execute("SELECT task_type FROM prompt_optimizer_samples WHERE id = ?", (sample_id,)).fetchone()
         if row is None:
@@ -4604,7 +5868,8 @@ async def prompt_optimizer_delete_sample(sample_id: str):
 
 
 @app.patch("/api/prompt-optimizer/rules/{rule_id}")
-async def prompt_optimizer_patch_rule(rule_id: str, req: PromptOptimizerRulePatch):
+async def prompt_optimizer_patch_rule(request: Request, rule_id: str, req: PromptOptimizerRulePatch):
+    _require_not_mobile_access(request)
     with db_connect() as conn:
         row = conn.execute("SELECT id FROM prompt_optimizer_rules WHERE id = ?", (rule_id,)).fetchone()
         if row is None:
@@ -4810,7 +6075,9 @@ async def put_message_feedback(session_id: str, req: MessageFeedbackRequest):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def patch_session(session_id: str, req: SessionPatch):
+async def patch_session(request: Request, session_id: str, req: SessionPatch):
+    if _is_mobile_access_request(request) and (req.archived is not None or req.tags is not None):
+        raise HTTPException(status_code=403, detail="mobile access cannot archive or retag sessions")
     updates: List[str] = []
     params: List = []
     if req.title is not None:
@@ -4834,7 +6101,8 @@ async def patch_session(session_id: str, req: SessionPatch):
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(request: Request, session_id: str):
+    _require_not_mobile_access(request)
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
     await _discard_warm_session(session_id)
@@ -4853,7 +6121,8 @@ async def delete_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/clear")
-async def clear_session(session_id: str):
+async def clear_session(request: Request, session_id: str):
+    _require_not_mobile_access(request)
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
     await _discard_warm_session(session_id)
@@ -4865,7 +6134,8 @@ async def clear_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/compact")
-async def compact_session(session_id: str, keep_last: int = Query(default=2, ge=1, le=10)):
+async def compact_session(request: Request, session_id: str, keep_last: int = Query(default=2, ge=1, le=10)):
+    _require_not_mobile_access(request)
     if session_id in _running_processes or session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is busy")
     _compacting_sessions.add(session_id)
@@ -5061,7 +6331,8 @@ async def mention_session(session_id: str, max_chars: int = Query(default=5000, 
 
 
 @app.post("/api/projects/scan")
-async def scan_project(cwd: str = Query(...)):
+async def scan_project(request: Request, cwd: str = Query(...)):
+    _require_mobile_cwd_is_known(request, cwd)
     project_dir = Path(os.path.expanduser(cwd)).resolve()
     if not project_dir.is_dir():
         raise HTTPException(status_code=400, detail="cwd not found")
@@ -5135,7 +6406,8 @@ async def active_memories(cwd: str = Query(default=""), session_id: str = Query(
 
 
 @app.post("/api/memories")
-async def create_memory(req: MemoryRequest):
+async def create_memory(request: Request, req: MemoryRequest):
+    _require_not_mobile_access(request)
     mid = uuid.uuid4().hex
     now = time.time()
     content = req.content.strip()
@@ -5151,7 +6423,8 @@ async def create_memory(req: MemoryRequest):
 
 
 @app.put("/api/memories/{memory_id}")
-async def update_memory(memory_id: str, req: MemoryRequest):
+async def update_memory(request: Request, memory_id: str, req: MemoryRequest):
+    _require_not_mobile_access(request)
     content = req.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="content required")
@@ -5167,7 +6440,8 @@ async def update_memory(memory_id: str, req: MemoryRequest):
 
 
 @app.delete("/api/memories/{memory_id}")
-async def delete_memory(memory_id: str):
+async def delete_memory(request: Request, memory_id: str):
+    _require_not_mobile_access(request)
     with db_connect() as conn:
         cursor = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
         if cursor.rowcount == 0:
@@ -5221,7 +6495,8 @@ async def search_prompts(q: str = Query(default=""), limit: int = Query(default=
 
 
 @app.post("/api/prompts")
-async def create_prompt(req: PromptRequest):
+async def create_prompt(request: Request, req: PromptRequest):
+    _require_not_mobile_access(request)
     pid = uuid.uuid4().hex
     with db_connect() as conn:
         conn.execute(
@@ -5232,7 +6507,8 @@ async def create_prompt(req: PromptRequest):
 
 
 @app.put("/api/prompts/{prompt_id}")
-async def update_prompt(prompt_id: str, req: PromptRequest):
+async def update_prompt(request: Request, prompt_id: str, req: PromptRequest):
+    _require_not_mobile_access(request)
     with db_connect() as conn:
         cursor = conn.execute(
             "UPDATE prompts SET name = ?, content = ?, slash_trigger = ? WHERE id = ?",
@@ -5244,7 +6520,8 @@ async def update_prompt(prompt_id: str, req: PromptRequest):
 
 
 @app.delete("/api/prompts/{prompt_id}")
-async def delete_prompt(prompt_id: str):
+async def delete_prompt(request: Request, prompt_id: str):
+    _require_not_mobile_access(request)
     with db_connect() as conn:
         cursor = conn.execute("DELETE FROM prompts WHERE id = ?", (prompt_id,))
         if cursor.rowcount == 0:
@@ -5575,7 +6852,8 @@ class McpServerPatchRequest(BaseModel):
 
 
 @app.get("/api/mcp/servers")
-async def list_mcp_servers(cwd: Optional[str] = Query(default=None)):
+async def list_mcp_servers(request: Request, cwd: Optional[str] = Query(default=None)):
+    _require_not_mobile_access(request)
     sources = _mcp_sources(cwd)
     result = []
     for source in sources:
@@ -5600,11 +6878,13 @@ async def list_mcp_servers(cwd: Optional[str] = Query(default=None)):
 
 @app.post("/api/mcp/servers/{name}")
 async def add_mcp_server(
+    request: Request,
     name: str,
     req: McpServerRequest,
     cwd: Optional[str] = Query(default=None),
     scope: str = Query(default="local"),
 ):
+    _require_not_mobile_access(request)
     target = _mcp_target(scope, cwd)
     if _mcp_config_in_source(target, name) is not None:
         raise HTTPException(status_code=409, detail=f"server '{name}' already exists")
@@ -5625,11 +6905,13 @@ async def add_mcp_server(
 
 @app.patch("/api/mcp/servers/{name}")
 async def patch_mcp_server(
+    request: Request,
     name: str,
     req: McpServerPatchRequest,
     cwd: Optional[str] = Query(default=None),
     scope: Optional[str] = Query(default=None),
 ):
+    _require_not_mobile_access(request)
     target = _find_mcp_source(name, scope, cwd)
     cfg = _mcp_config_in_source(target, name)
     if cfg is None:
@@ -5654,10 +6936,12 @@ async def patch_mcp_server(
 
 @app.delete("/api/mcp/servers/{name}")
 async def delete_mcp_server(
+    request: Request,
     name: str,
     cwd: Optional[str] = Query(default=None),
     scope: Optional[str] = Query(default=None),
 ):
+    _require_not_mobile_access(request)
     target = _find_mcp_source(name, scope, cwd)
     target["servers"].pop(name, None)
     if target["scope"] == "project":
@@ -5891,9 +7175,11 @@ async def _skill_translate_call_anthropic(
 
 @app.get("/api/config/settings")
 async def get_config_settings(
+    request: Request,
     scope: str = Query(default="user"),
     cwd: Optional[str] = Query(default=None),
 ):
+    _require_not_mobile_access(request)
     path = _resolve_settings_path(scope, cwd)
     data = _read_json_object(path) if path.exists() else {}
     return {
@@ -5905,7 +7191,8 @@ async def get_config_settings(
 
 
 @app.patch("/api/config/settings")
-async def patch_config_settings(payload: SettingsPatchRequest):
+async def patch_config_settings(request: Request, payload: SettingsPatchRequest):
+    _require_not_mobile_access(request)
     path = _resolve_settings_path(payload.scope, payload.cwd)
     async with _settings_lock_for(path):
         cur = _read_json_object(path) if path.exists() else {}
@@ -5923,7 +7210,8 @@ async def patch_config_settings(payload: SettingsPatchRequest):
 
 
 @app.get("/api/config/skills")
-async def list_config_skills():
+async def list_config_skills(request: Request):
+    _require_not_mobile_access(request)
     items: List[dict] = []
     if _SKILLS_DIR.exists() and _SKILLS_DIR.is_dir():
         for entry in sorted(_SKILLS_DIR.iterdir()):
@@ -5942,7 +7230,8 @@ async def list_config_skills():
 
 
 @app.get("/api/config/skills/{name}/source")
-async def get_config_skill_source(name: str):
+async def get_config_skill_source(request: Request, name: str):
+    _require_not_mobile_access(request)
     safe = _validate_skill_dir_name(name)
     md = _SKILLS_DIR / safe / "SKILL.md"
     md_disabled = _SKILLS_DIR / safe / "SKILL.md.disabled"
@@ -5956,7 +7245,8 @@ async def get_config_skill_source(name: str):
 
 
 @app.patch("/api/config/skills/{name}")
-async def toggle_config_skill(name: str, payload: SkillToggleRequest):
+async def toggle_config_skill(request: Request, name: str, payload: SkillToggleRequest):
+    _require_not_mobile_access(request)
     safe = _validate_skill_dir_name(name)
     skill_dir = _SKILLS_DIR / safe
     if not skill_dir.is_dir():
@@ -5986,7 +7276,8 @@ async def toggle_config_skill(name: str, payload: SkillToggleRequest):
 
 
 @app.post("/api/config/skills/translate")
-async def translate_config_skills(payload: SkillTranslateRequest):
+async def translate_config_skills(request: Request, payload: SkillTranslateRequest):
+    _require_not_mobile_access(request)
     items = [it for it in payload.items if it.name and it.description]
     if not items:
         return {"translations": {}}
@@ -6162,7 +7453,8 @@ async def _list_files_via_git(base: Path, q_lower: str, limit: int) -> Optional[
 
 
 @app.get("/api/files")
-async def list_files(cwd: str = Query(...), q: str = Query(default=""), limit: int = Query(default=30)):
+async def list_files(request: Request, cwd: str = Query(...), q: str = Query(default=""), limit: int = Query(default=30)):
+    _require_mobile_cwd_is_known(request, cwd)
     base = Path(os.path.expanduser(cwd)).resolve()
     if not base.exists() or not base.is_dir():
         return []
@@ -6192,7 +7484,8 @@ async def list_files(cwd: str = Query(...), q: str = Query(default=""), limit: i
 
 
 @app.get("/api/git")
-async def git_status(cwd: str = Query(...)):
+async def git_status(request: Request, cwd: str = Query(...)):
+    _require_mobile_cwd_is_known(request, cwd)
     target = os.path.expanduser(cwd)
     if not os.path.isdir(target):
         return {"branch": "", "dirty": 0, "available": False}
@@ -6519,6 +7812,7 @@ async def update_check(force: bool = Query(default=False)):
         }
     _update_check_cache["ts"] = now
     _update_check_cache["data"] = data
+    _notification_maybe_send_update(data)
     return data
 
 
@@ -6604,9 +7898,10 @@ def main():
     if args.host not in _LOCAL_HOSTS:
         print()
         print(f"  ⚠️  WARNING: binding to {args.host} exposes the server beyond localhost.", file=sys.stderr)
-        print("     claude-web has NO built-in authentication. Anyone who can reach this", file=sys.stderr)
-        print("     address can run commands, read your files, and burn your Claude quota.", file=sys.stderr)
-        print("     Only use --host on a trusted network (e.g. tailscale, VPN, SSH tunnel).", file=sys.stderr)
+        print("     Preferred mobile setup: bind --host to this computer's LAN/private IP", file=sys.stderr)
+        print("     and enable Settings → Mobile Access so phones must enter an access code.", file=sys.stderr)
+        print("     Avoid --host 0.0.0.0 on company / hotel / public networks; it exposes", file=sys.stderr)
+        print("     claude-web to every reachable interface instead of one chosen address.", file=sys.stderr)
 
     print()
 

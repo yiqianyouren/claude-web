@@ -41,6 +41,8 @@ pip install claude-web-ui && claude-web
 - 停止正在运行的任务
 - **活跃会话保温**：每个会话保留一个持久 claude 进程，后续轮次跳过冷启动和 MCP 握手（无 MCP 省 1-2s，重度 MCP 用户省 5-15s/轮）
 - **Agent Loop 自主工作模式**：给 Claude 一个目标、轮数和 token 预算，后端 job 会自动连续执行、测试、失败重试、修复，直到完成、阻塞、停止或预算用完
+- **通知中心**：Agent Loop 完成 / 阻塞 / 出错、重复测试失败和版本更新可推送到飞书、钉钉、企业微信、Slack、Discord、Telegram Bot 或自定义 Webhook
+- **手机访问问答模式**：同 WiFi 下可用本机局域网 IP + 6 位访问码在手机浏览器访问；设备授权有效期可自定义，手机端只保留问答、查看结果和切换已保存项目等低风险操作
 - **跟进建议**：回答后自动生成 3 个「你可能想继续问」的追问按钮
 - **会话分叉**：基于任意历史消息编辑 / 重新生成，原会话保留
 - **思考动画**：等待响应时用跳动圆点 + 扫光文字提示
@@ -89,6 +91,7 @@ pip install claude-web-ui && claude-web
 - **Git Checkpoint**：每轮对话前自动 `git stash create` 快照，一键回滚文件
 - **编辑 / 重新生成**：基于任意历史消息分叉新会话
 - **SSRF 防护**：URL 抓取拒绝私网 / 本地主机
+- **移动访问安全**：手机访问必须通过本机生成的访问码授权；通知 Webhook 拒绝本地 / 私网 / 链路本地目标，反向代理 HTTPS 场景下 cookie 会正确设置 Secure 标记
 
 ### 📋 TodoWrite 实时看板
 - Claude 调用 TodoWrite 时右上角弹出任务面板
@@ -109,6 +112,7 @@ pip install claude-web-ui && claude-web
 - **版本更新提醒**：启动后会轻量检查 PyPI 最新版，发现新版时右下角提示并可一键复制升级命令；已升级到新版本后会显示 What's New
 - **帮助面板（顶栏 `?`）**：快捷键速查 / 使用技巧 / 完整更新日志 / 一键重看引导
 - **新会话空状态**：4 张示例 prompt 卡片（代码审查 / 技术解释 / 写工具 / Mermaid）一键填入
+- **移动端优化**：手机上侧栏为抽屉式导航，底部输入区适配 iPhone safe area，代码块 / 工具结果 / Edit Diff 针对窄屏做滚动和上下布局
 
 ### 📊 其它
 - 模型切换（Opus / Sonnet / Haiku）
@@ -118,7 +122,7 @@ pip install claude-web-ui && claude-web
 - 暗黑模式
 - 快捷键：`⌘K` 搜索 · `⌘N` 新会话 · `Esc` 关闭弹窗 / 引导 / 弹窗
 - 浏览器通知 + 完成提示音
-- 移动端响应式（侧栏可收起）
+- 移动端响应式（侧栏抽屉、手机问答模式、窄屏代码块优化）
 - IME 输入法兼容（中文拼音回车不误发）
 
 ---
@@ -184,15 +188,31 @@ claude-web
 claude-web                    # 默认 127.0.0.1:8765
 claude-web --port 9000        # 自定义端口
 claude-web --open             # 启动后自动打开浏览器
-claude-web --host 0.0.0.0     # 局域网共享
 ```
 
-### 局域网共享（可选）
+### 手机访问（同 WiFi + 访问码）
+
+Claude Web 能读本地文件、执行命令并消耗 Claude quota。手机访问默认建议只在可信同 WiFi 下使用，并始终开启访问码。
+
+电脑端打开「设置 → 手机访问」后，会自动识别本机局域网 IP，并给出推荐启动命令和手机访问地址：
 
 ```bash
-claude-web --host 0.0.0.0
+claude-web --host <本机局域网 IP>
 ```
-⚠️ 别暴露到公网，本工具**没有鉴权**。
+
+手机打开：
+
+```text
+http://<本机局域网 IP>:8765
+```
+
+首次访问时，在电脑端「设置 → 手机访问」里开启功能并生成 6 位访问码；手机输入访问码后，会按你选择的有效期保持授权，到期自动重新验证。
+
+出门远程使用时，可以选择 ZeroTier 等私有网络工具，让电脑和手机处在同一个私有网络里，再绑定对应的私有 IP。
+
+不建议把服务直接暴露到公网，也不建议在公司、酒店、咖啡店等公共网络使用 `0.0.0.0`。
+
+⚠️ `0.0.0.0` 会让所有可达网卡都监听服务；即使开启了手机访问码，也更推荐绑定一个明确的本机 IP。
 
 ### 自定义端口
 
@@ -215,6 +235,20 @@ PORT=9000 python server.py
 - “审查这组改动，能修的直接修，最后总结”
 
 如果填写了测试命令，后端会在每轮 Claude 回复后自动运行该命令，把退出码、stdout、stderr 喂给下一轮 Claude；如果留空，会按 `package.json`、`Makefile`、Python 项目标记自动检测常见测试命令。单轮 Claude 调用失败会最多自动重试 2 次，连续 3 次遇到相同测试失败会暂停并提示人工介入。运行期间输入框会显示状态条，可随时点「停止」。勾选浏览器通知后，完成、阻塞或达到预算时会弹系统通知。
+
+### 通知中心 / Webhook
+
+打开「设置 → 通知渠道」即可启用远端通知。当前内置：
+
+- 飞书群机器人
+- 钉钉自定义机器人
+- 企业微信群机器人
+- Slack Incoming Webhook
+- Discord Webhook
+- Telegram Bot（Bot Token + Chat ID）
+- 自定义 Webhook
+
+每个渠道都可以独立启用、选择事件、发送测试通知，并查看最近 20 条发送记录。默认事件包含 Agent Loop 完成、阻塞、重复失败、出错和版本更新；聊天错误可手动勾选。自定义 Webhook 会收到标准 JSON payload，并可用 Secret 生成 `X-Claude-Web-Signature: sha256=...` 签名；飞书和钉钉 Secret 会按各自机器人签名规则发送。
 
 ### Chrome 插件：当前页面 / 选中即问
 
@@ -336,6 +370,9 @@ claude-web/
 | `/api/agent-loop/active` | GET | 查询当前仍在运行的 Agent Loop job，可按 `session_id` 过滤 |
 | `/api/agent-loop/{job_id}/stream` | GET | 订阅 Agent Loop job 事件流，包含 Claude chat 事件和测试结果；可用 `from` 跳过已收到事件 |
 | `/api/agent-loop/{job_id}/stop` | POST | 请求停止 Agent Loop job、当前 Claude turn 和正在运行的测试命令 |
+| `/api/notifications/settings` | GET/PUT | 读取 / 保存通知中心配置（飞书、钉钉、企业微信、Slack、Discord、Telegram Bot、自定义 Webhook） |
+| `/api/notifications/test` | POST | 向指定通知渠道发送测试消息 |
+| `/api/notifications/deliveries` | GET | 查看最近 20 条通知发送记录 |
 | `/api/extension/status` | GET | Chrome 插件检测服务和 token 状态 |
 | `/api/extension/token` | POST | 生成 / 重置浏览器插件 token |
 | `/api/extension/ask` | POST | 插件选中即问，SSE 流式返回并写入会话历史 |
@@ -408,6 +445,8 @@ claude-web/
 - [x] 联网搜索开关、`@` 文件 / 会话 / 提示词 / 记忆引用、Token 估算、草稿自动保存、提示词模板库
 - [x] Slash 命令菜单（`/new` `/clear` `/fork` `/compact` `/init` + 内置 / 自定义模板）
 - [x] Agent Loop 自主工作模式（后端 job、目标 + 轮数 + token 预算、自动执行 / 测试 / 修复、失败重试、重复失败暂停、测试命令自动检测、可停止和完成通知）
+- [x] 手机访问问答模式（同 WiFi + 指定本机 IP + 访问码、设备授权有效期、手机端高风险管理操作降级）
+- [x] 移动端体验优化（侧栏 off-canvas 抽屉、safe area 输入区、900px 顶栏收纳、窄屏代码 / 工具 / Diff 适配）
 - [x] Prompt 优化器（本地黄金样本库、按任务类型沉淀个人规则、相似成功样本、三档改写、一键采用）
 - [x] Chrome 当前页面 / 选中即问插件（点击图标打开 Side Panel、读取当前页、右键解释 / 审查 / 改写 / 生成测试，可转入完整 Web 会话）
 - [x] Mermaid / LaTeX 渲染、图片 Lightbox、代码块复制与本地运行

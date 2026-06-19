@@ -3,14 +3,19 @@
   "releases": [
     {
       "version": "1.6.1",
-      "date": "2026-06-18",
+      "date": "2026-06-19",
       "highlights": [
         { "type": "feature", "text": "Agent Loop 升级为后端 job：前端只负责启动 / 订阅 / 停止，测试命令由后端在每轮后自动执行，并把结果反馈给下一轮 Claude；刷新或重开同一会话时会恢复仍在运行的 job 事件流" },
         { "type": "feature", "text": "Agent Loop 增强可靠性：不填测试命令时自动检测 npm test / make test / pytest；单轮失败最多自动重试 2 次且不消耗正常轮次预算；连续 3 次相同测试失败会暂停并提示人工介入；每轮 checkpoint 在时间线中显示快捷回滚" },
         { "type": "feature", "text": "新增版本更新提醒：启动后检查 PyPI 最新版，发现新版时右下角提示并在帮助面板显示升级命令" },
+        { "type": "feature", "text": "新增通知中心：Agent Loop 完成 / 阻塞 / 重复失败 / 出错和版本更新可推送到飞书、钉钉、企业微信、Slack、Discord、Telegram Bot 或自定义 Webhook；支持测试发送、事件开关、Secret 签名和最近发送记录" },
+        { "type": "feature", "text": "新增手机访问模式：设置页自动识别本机局域网 IP，可生成 6 位访问码、自定义设备授权有效期、查看和撤销已授权设备；手机端进入问答模式，可提问 / 查看结果 / 从已保存项目切换目录，高风险管理操作自动禁用" },
+        { "type": "feature", "text": "移动端体验升级：侧栏改为 off-canvas 抽屉并支持遮罩 / 关闭按钮 / 背景滚动锁定；900px 以下顶栏自动收纳，底部输入区适配 iPhone safe area，空状态快捷 prompt 改为横向滑动并显示更多提示" },
         { "type": "feature", "text": "新增 Agent Loop 自主工作模式：给定目标、轮数和 token 预算后，Claude 会自动连续执行、测试、修复，直到输出完成标记、阻塞、停止或预算用完，并可在结束时触发浏览器通知" },
         { "type": "feature", "text": "Chrome 插件升级为当前页面上下文助手：点击插件图标直接打开 Side Panel，点「读取当前页」即可把整页可见正文带给 Claude；右键选中内容提问仍保留" },
-        { "type": "feature", "text": "长会话新增里程碑标记：用户消息和回答都可点 ⭐，左侧「标记」Tab 只看关键轮次并一键滚动回原消息" }
+        { "type": "feature", "text": "长会话新增里程碑标记：用户消息和回答都可点 ⭐，左侧「标记」Tab 只看关键轮次并一键滚动回原消息" },
+        { "type": "fix", "text": "窄屏代码 / 工具渲染优化：代码块、表格、工具结果和 Artifact 代码视图支持横向滚动，Edit Diff 在手机上改为上下对比，避免长代码撑爆页面" },
+        { "type": "fix", "text": "安全硬化：通知 Webhook 投递拒绝本地 / 私网 / 链路本地目标，移动访问 cookie 在反向代理 HTTPS 场景下正确设置 Secure 标记；登录页深色模式下补充清晰 focus ring" }
       ]
     },
     {
