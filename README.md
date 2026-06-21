@@ -23,6 +23,9 @@ pip install claude-web-ui && claude-web
 ### Token 级流式输出 & 工具调用可视化
 ![流式 + 工具](screenshots/stream.png)
 
+### 手机访问问答模式
+![手机访问问答模式](screenshots/mobile-qa.png)
+
 ### Chrome MV3「选中即问」插件
 点击插件图标即可打开 Chrome Side Panel；可读取当前页面全文，也可在网页选中文本或代码后右键让 Claude 解释、审查、改写或生成测试。
 ![Chrome 选中即问插件](screenshots/diff.png)
