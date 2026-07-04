@@ -2860,6 +2860,683 @@
     width: 17px !important;
     height: 17px !important;
   }
+
+  /* ===== 2026-07-05 visual correction overrides ===== */
+  body {
+    --cw-sidebar-width: 286px;
+    --cw-empty-form-top: clamp(320px, 38vh, 410px);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif !important;
+    letter-spacing: 0 !important;
+    color: #34312e;
+  }
+  #sidebar {
+    width: var(--cw-sidebar-width) !important;
+    min-width: var(--cw-sidebar-width) !important;
+    background: #f7f7f6 !important;
+  }
+  #sidebar > .px-3:first-child {
+    min-height: 50px !important;
+    padding: 17px 16px 8px !important;
+  }
+  #sidebar > .px-3:first-child .font-semibold {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif !important;
+    font-size: 17px !important;
+    font-weight: 680 !important;
+    line-height: 1.15 !important;
+    color: #2b2927 !important;
+  }
+  #sidebar > .px-2 {
+    padding: 14px 10px 6px !important;
+  }
+  #newSession,
+  .cw-nav-row {
+    min-height: 38px !important;
+    border-radius: 12px !important;
+    font-size: 14px !important;
+    font-weight: 620 !important;
+    color: #33302d !important;
+  }
+  .cw-nav-list {
+    gap: 3px !important;
+    padding: 8px 10px 14px !important;
+  }
+  body.cw-search-open #cwSearchNav {
+    display: none !important;
+  }
+  .cw-search-overlay-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 78;
+    background: rgba(246, 245, 243, .58);
+    backdrop-filter: blur(1.5px);
+  }
+  .cw-search-row {
+    margin: 0 !important;
+    border-radius: 16px !important;
+    background: #fff !important;
+    border: 1px solid #ddd8d1 !important;
+    box-shadow: 0 24px 64px rgba(42, 36, 30, .16);
+    outline: 0;
+    overflow: hidden;
+    z-index: 90;
+  }
+  body.cw-search-open .cw-search-row {
+    position: fixed !important;
+    top: clamp(86px, 16vh, 136px);
+    left: calc(var(--cw-sidebar-width) + ((100vw - var(--cw-sidebar-width)) / 2));
+    width: min(660px, calc(100vw - var(--cw-sidebar-width) - 88px));
+    transform: translateX(-50%);
+  }
+  .cw-search-shell {
+    display: flex;
+    flex-direction: column;
+    max-height: min(620px, 74vh);
+  }
+  .cw-search-field-line {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) 34px;
+    align-items: center;
+    min-height: 58px;
+    padding: 0 14px;
+    border-bottom: 1px solid #ece7e1;
+  }
+  .cw-search-icon,
+  .cw-search-close {
+    color: #8b867f;
+  }
+  .cw-search-icon svg,
+  .cw-search-close svg {
+    width: 18px;
+    height: 18px;
+  }
+  .cw-search-row input {
+    min-height: 40px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    outline: 0 !important;
+    color: #32302d !important;
+    font-size: 16px !important;
+    font-weight: 560 !important;
+  }
+  .cw-search-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    cursor: pointer;
+  }
+  .cw-search-close:hover {
+    background: #f0eeeb;
+    color: #3c3834;
+  }
+  .cw-search-results {
+    max-height: min(520px, 60vh);
+    overflow-y: auto;
+    padding: 10px;
+  }
+  .cw-search-result {
+    display: grid;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #302d2a;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-search-result:hover,
+  .cw-search-result.active {
+    background: #f0efed;
+  }
+  .cw-search-result-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    color: #6f6a64;
+  }
+  .cw-search-result-icon svg {
+    width: 17px;
+    height: 17px;
+  }
+  .cw-search-result-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 590;
+  }
+  .cw-search-result-time {
+    color: #8f8983;
+    font-size: 12.5px;
+    font-weight: 520;
+    white-space: nowrap;
+  }
+  .cw-search-empty {
+    padding: 28px 10px;
+    color: #9a948d;
+    font-size: 13px;
+    text-align: center;
+  }
+  .cw-nav-icon,
+  .cw-nav-icon svg {
+    width: 17px !important;
+    height: 17px !important;
+  }
+  .cw-session-head {
+    min-height: 26px !important;
+    padding: 0 4px 6px !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #918c86 !important;
+  }
+  body.code-mode .cw-session-head,
+  body.code-mode #sessionMoreBtn {
+    display: none !important;
+  }
+  #sessionList {
+    padding: 14px 12px 8px !important;
+  }
+  #sessionItems .session-item,
+  .cw-sidebar-session {
+    min-height: 34px !important;
+    padding: 7px 10px !important;
+    margin-bottom: 2px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #363330 !important;
+  }
+  #sessionItems .session-item {
+    position: relative;
+    overflow: visible !important;
+    max-width: 100%;
+  }
+  #sessionItems .session-item:hover,
+  #sessionItems .session-item.active,
+  .cw-sidebar-session:hover,
+  .cw-sidebar-session.active {
+    background: #e9e8e6 !important;
+  }
+  .cw-flat-session {
+    padding: 6px 8px !important;
+  }
+  .cw-flat-session-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+  .cw-flat-session-title {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    overflow: hidden;
+    color: #32302d;
+    font-size: 13.5px;
+    font-weight: 580;
+    line-height: 1.35;
+  }
+  .cw-flat-session-title span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cw-flat-session-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+  }
+  .cw-flat-session-date {
+    color: #9a948d;
+    font-size: 12px;
+    font-weight: 520;
+    white-space: nowrap;
+  }
+  .cw-flat-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 4px 28px 0 0;
+  }
+  .cw-session-menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 25px;
+    height: 25px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #817b75;
+    cursor: pointer;
+  }
+  .cw-session-menu-btn:hover,
+  .cw-session-menu-btn[aria-expanded="true"] {
+    background: #dedbd8;
+    color: #2f2c29;
+  }
+  .cw-session-menu-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  .cw-session-actions {
+    position: absolute;
+    top: 30px;
+    right: 8px;
+    z-index: 30;
+    min-width: 116px;
+    padding: 5px;
+    border: 1px solid #e5dfd8;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 14px 36px rgba(36, 30, 25, .14);
+  }
+  .cw-session-action {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    min-height: 30px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: #3d3935;
+    font-size: 12px;
+    font-weight: 580;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-session-action:hover {
+    background: #f1efed;
+  }
+  #sessionItems .session-item .text-sm,
+  .cw-session-title {
+    font-size: 13.5px !important;
+    font-weight: 570 !important;
+    line-height: 1.35 !important;
+    color: #32302d !important;
+  }
+  .cw-session-time {
+    flex: 0 0 auto;
+    margin-left: 8px;
+    color: #97918b;
+    font-size: 12px;
+    font-weight: 520;
+  }
+  .cw-code-sidebar {
+    display: grid;
+    gap: 22px;
+    padding: 4px 0 12px;
+    min-width: 0;
+  }
+  .cw-code-sidebar section {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .cw-sidebar-section-title {
+    padding: 0 8px 7px;
+    color: #a09b95;
+    font-size: 15px;
+    font-weight: 640;
+  }
+  .cw-project-group {
+    margin-bottom: 5px;
+  }
+  .cw-project-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 31px;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #3a3734;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .cw-project-row:hover,
+  .cw-project-row.active {
+    background: #eeedeb;
+  }
+  .cw-project-row.active {
+    color: #272421;
+  }
+  .cw-project-row svg,
+  .cw-project-empty-icon {
+    width: 16px;
+    height: 16px;
+    flex: 0 0 auto;
+    color: #7d7872;
+  }
+  .cw-project-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    font-weight: 570;
+  }
+  .cw-project-count {
+    margin-left: auto;
+    color: #9a948d;
+    font-size: 11.5px;
+    font-weight: 560;
+    white-space: nowrap;
+  }
+  .cw-project-chevron {
+    width: 14px !important;
+    height: 14px !important;
+    margin-left: 0;
+    color: #918b85 !important;
+    transition: transform .16s ease;
+  }
+  .cw-project-group.collapsed .cw-project-chevron {
+    transform: rotate(-90deg);
+  }
+  .cw-project-session-list {
+    margin: 1px 0 4px 24px;
+    max-width: calc(100% - 24px);
+    min-width: 0;
+    overflow: hidden;
+  }
+  .cw-general-session-list {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+  }
+  .cw-general-more {
+    padding: 6px 8px 2px;
+    color: #8f8983;
+    font-size: 12.5px;
+    font-weight: 560;
+    line-height: 1.35;
+  }
+  .cw-project-session {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    min-height: 29px;
+    padding: 3px 7px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #373431;
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .cw-project-session:hover,
+  .cw-project-session.active {
+    background: #e9e8e6;
+  }
+  .cw-project-session .cw-session-title {
+    font-size: 13.5px !important;
+    font-weight: 590 !important;
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cw-project-session .cw-session-time {
+    max-width: 52px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .cw-show-more {
+    margin: 2px 0 2px 7px;
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    color: #8f8983;
+    font-size: 13px;
+    font-weight: 620;
+    cursor: pointer;
+  }
+  .cw-code-chat-section {
+    border-top: 1px solid #e8e4df;
+    padding-top: 18px;
+  }
+  body.code-mode .cw-workspace-card {
+    display: none !important;
+  }
+  .cw-local-footer {
+    min-height: 66px !important;
+    padding: 9px 14px !important;
+  }
+  .cw-local-footer strong {
+    font-size: 12px !important;
+    font-weight: 620 !important;
+  }
+  .cw-local-footer span {
+    font-size: 10.5px !important;
+  }
+  #mainPane > header {
+    min-height: 48px !important;
+  }
+  #titleLabel {
+    font-size: 14px !important;
+    font-weight: 650 !important;
+    color: #2d2a27 !important;
+  }
+  .cw-code-chip {
+    min-height: 24px !important;
+    padding: 0 2px !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    color: #514d48 !important;
+  }
+  .cw-code-chip::before {
+    content: '';
+    display: none !important;
+  }
+  #chatInner {
+    max-width: 900px !important;
+    padding-top: 20vh !important;
+  }
+  body.code-mode #chatInner {
+    padding-top: 20vh !important;
+  }
+  .empty-title {
+    font-size: clamp(34px, 3.1vw, 46px) !important;
+    font-weight: 390 !important;
+    line-height: 1.12 !important;
+    color: #47423d !important;
+  }
+  body.code-mode .empty-title {
+    font-size: clamp(31px, 2.7vw, 40px) !important;
+    font-weight: 420 !important;
+  }
+  .empty-subtitle {
+    font-size: 13.5px !important;
+    line-height: 1.55 !important;
+  }
+  body.cw-empty #form {
+    width: min(760px, calc(100vw - var(--cw-sidebar-width) - 300px)) !important;
+    max-width: 760px !important;
+  }
+  body.code-mode.cw-empty #form {
+    width: min(820px, calc(100vw - var(--cw-sidebar-width) - 280px)) !important;
+    max-width: 820px !important;
+  }
+  body.cw-empty.cw-advanced-open {
+    --cw-empty-form-top: clamp(330px, 42vh, 420px);
+  }
+  body.code-mode.cw-empty.cw-advanced-open #chatInner {
+    padding-top: clamp(82px, 12vh, 132px) !important;
+  }
+  body.code-mode.cw-empty.cw-advanced-open .empty-subtitle {
+    max-width: 620px;
+    margin-left: auto !important;
+    margin-right: auto !important;
+  }
+  body.code-mode.cw-empty.cw-advanced-open #form {
+    width: min(760px, calc(100vw - var(--cw-sidebar-width) - 320px)) !important;
+    max-width: 760px !important;
+  }
+  body.cw-empty.cw-has-draft #form {
+    width: min(700px, calc(100vw - var(--cw-sidebar-width) - 340px)) !important;
+    max-width: 700px !important;
+  }
+  body.code-mode.cw-empty.cw-has-draft #form {
+    width: min(760px, calc(100vw - var(--cw-sidebar-width) - 320px)) !important;
+    max-width: 760px !important;
+  }
+  body.cw-empty .composer {
+    min-height: 144px !important;
+    padding: 20px 22px 16px !important;
+    border-radius: 21px !important;
+  }
+  body.code-mode.cw-empty .composer {
+    min-height: 150px !important;
+  }
+  body.cw-empty .composer-textarea {
+    min-height: 54px !important;
+    padding-bottom: 12px !important;
+    font-size: 15.5px !important;
+    line-height: 1.55 !important;
+  }
+  .composer-btn {
+    width: 30px !important;
+    height: 30px !important;
+    border-radius: 9px !important;
+  }
+  .composer-btn svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+  .composer-send {
+    width: 38px !important;
+    height: 38px !important;
+    border-radius: 12px !important;
+  }
+  .cw-context-chip {
+    min-height: 24px !important;
+    padding: 0 4px !important;
+    border: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    color: #77716b !important;
+    font-size: 13px !important;
+    font-weight: 520 !important;
+    gap: 6px !important;
+  }
+  .cw-context-chip svg {
+    display: block !important;
+    width: 16px !important;
+    height: 16px !important;
+    color: #8a847d !important;
+    flex: 0 0 auto;
+  }
+  .cw-composer-code-context {
+    gap: 18px !important;
+  }
+  body.code-mode.cw-empty:not(.cw-has-draft) .composer {
+    margin-bottom: 38px !important;
+  }
+  body.code-mode.cw-empty:not(.cw-has-draft) .cw-composer-code-context {
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    bottom: -38px;
+    display: flex !important;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 36px !important;
+    padding: 0 8px !important;
+    border-radius: 0 0 18px 18px;
+    background: #f4f3f1 !important;
+  }
+  .cw-quick-action {
+    min-height: 33px !important;
+    padding: 0 14px !important;
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+  }
+  body.cw-has-draft .cw-quick-actions,
+  body.cw-has-draft .cw-composer-code-context {
+    display: none !important;
+  }
+  .cw-more-tools {
+    position: relative;
+    display: inline-flex;
+  }
+  .cw-more-tools-menu {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 8px);
+    z-index: 50;
+    min-width: 154px;
+    padding: 6px;
+    border: 1px solid #e4ded7;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 18px 42px rgba(38, 31, 26, .12);
+  }
+  .cw-more-tool-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    min-height: 34px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #3a3632;
+    font-size: 12.5px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-more-tool-item:hover,
+  .cw-more-tool-item.toolbar-btn-active {
+    background: #f0ece8 !important;
+    color: #c46136 !important;
+  }
+  @media (max-width: 768px) {
+    body {
+      --cw-sidebar-width: 286px;
+    }
+    #chatInner {
+      padding-top: 12vh !important;
+    }
+    body.cw-empty #form,
+    body.code-mode.cw-empty #form,
+    body.cw-empty.cw-has-draft #form,
+    body.code-mode.cw-empty.cw-has-draft #form {
+      width: 100% !important;
+      max-width: 100% !important;
+    }
+  }
 </style>
 </head>
 <body class="h-screen flex">
@@ -2882,10 +3559,21 @@
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       <span>新会话</span>
     </button>
-    <div class="relative cw-search-row hidden">
-      <input id="searchInput" type="text" placeholder="搜索"
-        class="w-full pl-8 pr-3 py-1.5 text-[13px]" style="background:transparent; border:1px solid transparent;" />
-      <span style="position:absolute; left:10px; top:50%; transform:translateY(-50%); color:var(--text-subtle); font-size:11px;">🔍</span>
+    <div id="cwSearchOverlayBackdrop" class="cw-search-overlay-backdrop hidden" aria-hidden="true"></div>
+    <div class="relative cw-search-row hidden" role="dialog" aria-label="搜索会话和项目">
+      <div class="cw-search-shell">
+        <div class="cw-search-field-line">
+          <span class="cw-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          </span>
+          <input id="searchInput" type="text" placeholder="搜索聊天记录和项目"
+            class="w-full text-[13px]" style="background:transparent; border:1px solid transparent;" />
+          <button type="button" id="cwSearchCloseBtn" class="cw-search-close" aria-label="关闭搜索">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+        <div id="cwSearchOverlayResults" class="cw-search-results"></div>
+      </div>
     </div>
   </div>
 
@@ -3096,20 +3784,32 @@
             <button type="button" id="webSearchBtn" class="composer-btn" title="联网搜索">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
             </button>
-            <button type="button" id="promptOptimizeBtn" class="composer-btn" title="优化 Prompt">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9H6"/><path d="M20 9h-2"/><path d="m17.8 6.2 1.4-1.4"/><path d="m10.8 13.2-1.4 1.4"/><path d="m10.8 4.8-1.4-1.4"/><path d="m17.8 11.8 1.4 1.4"/><path d="M12 9a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/><path d="m3 21 9-9"/></svg>
-            </button>
-            <button type="button" id="agentLoopBtn" class="composer-btn" title="Agent Loop 自主工作">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>
-            </button>
+            <div class="cw-more-tools">
+              <button type="button" id="composerMoreToolsBtn" class="composer-btn" title="更多工具" aria-haspopup="menu" aria-expanded="false">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>
+              </button>
+              <div id="composerMoreToolsMenu" class="cw-more-tools-menu hidden" role="menu">
+                <button type="button" id="promptOptimizeBtn" class="cw-more-tool-item" role="menuitem">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4V2"/><path d="M15 16v-2"/><path d="M8 9H6"/><path d="M20 9h-2"/><path d="m17.8 6.2 1.4-1.4"/><path d="m10.8 13.2-1.4 1.4"/><path d="m10.8 4.8-1.4-1.4"/><path d="m17.8 11.8 1.4 1.4"/><path d="M12 9a3 3 0 1 0 6 0 3 3 0 0 0-6 0"/><path d="m3 21 9-9"/></svg>
+                  <span>优化 Prompt</span>
+                </button>
+                <button type="button" id="agentLoopBtn" class="cw-more-tool-item" role="menuitem">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/></svg>
+                  <span>Agent Loop</span>
+                </button>
+              </div>
+            </div>
             <span class="cw-composer-code-context" id="cwComposerCodeContext">
               <span class="cw-context-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>
                 <span id="cwComposerProjectName">claude-web</span>
               </span>
               <span class="cw-context-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a4 4 0 0 0 4 4h2"/><path d="M18 7v3a4 4 0 0 1-4 4h-2"/><path d="M12 14v3"/></svg>
                 <span id="cwComposerBranchName">main</span>
               </span>
               <span class="cw-context-chip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M7 7v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
                 <span id="cwComposerPermLabel">本地模式</span>
               </span>
             </span>
@@ -4025,6 +4725,16 @@ let mobileQuestionMode = false;
 let savedCwdOptions = [];
 const MOBILE_BANNER_DISMISSED_KEY = 'mobileQuestionBannerDismissed';
 let mobileBannerDismissed = LS.get(MOBILE_BANNER_DISMISSED_KEY, false);
+const CODE_PROJECT_EXPANDED_KEY = 'codeProjectExpandedV1';
+let codeProjectExpanded = LS.get(CODE_PROJECT_EXPANDED_KEY, {});
+const CODE_PROJECT_COLLAPSED_KEY = 'codeProjectCollapsedV1';
+let codeProjectCollapsed = LS.get(CODE_PROJECT_COLLAPSED_KEY, {});
+const CODE_PROJECT_COLLAPSE_DEFAULTS_KEY = 'codeProjectCollapseDefaultsV2';
+if (!LS.get(CODE_PROJECT_COLLAPSE_DEFAULTS_KEY, false)) {
+  codeProjectCollapsed = {};
+  LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
+  LS.set(CODE_PROJECT_COLLAPSE_DEFAULTS_KEY, true);
+}
 
 // Per-turn tracking (for edit/regenerate/restore)
 let currentUserIndex = 0;
@@ -4062,6 +4772,8 @@ const webSearchBtn = $('webSearchBtn');
 const docInput = $('docInput');
 const docAttachBtn = $('docAttachBtn');
 const docChipsEl = $('docChips');
+const composerMoreToolsBtn = $('composerMoreToolsBtn');
+const composerMoreToolsMenu = $('composerMoreToolsMenu');
 const agentLoopBtn = $('agentLoopBtn');
 const agentLoopModal = $('agentLoopModal');
 const agentLoopGoal = $('agentLoopGoal');
@@ -4105,6 +4817,9 @@ const artifactDownloadBtn = $('artifactDownloadBtn');
 const artifactCopyBtn = $('artifactCopyBtn');
 const searchInput = $('searchInput');
 const sidebarSearchRow = searchInput ? searchInput.closest('.cw-search-row') : null;
+const cwSearchOverlayBackdrop = $('cwSearchOverlayBackdrop');
+const cwSearchOverlayResults = $('cwSearchOverlayResults');
+const cwSearchCloseBtn = $('cwSearchCloseBtn');
 const modelSelect = $('modelSelect');
 const permSelect = $('permSelect');
 const mobileModeBanner = $('mobileModeBanner');
@@ -7233,11 +7948,23 @@ function updateTokenCount() {
   tokenCounter.classList.toggle('text-orange-500', t > 50000);
 }
 
+function syncComposerDraftState() {
+  document.body.classList.toggle('cw-has-draft', !!input.value.trim());
+}
+
 // ===== draft autosave =====
 const draftKey = () => 'draft_' + (sessionId || 'new');
 function saveDraft() { localStorage.setItem(draftKey(), input.value); }
-function restoreDraft() { input.value = localStorage.getItem(draftKey()) || ''; updateTokenCount(); }
-function clearDraft() { localStorage.removeItem(draftKey()); }
+function restoreDraft() {
+  input.value = localStorage.getItem(draftKey()) || '';
+  updateTokenCount();
+  autosizeTextarea();
+  syncComposerDraftState();
+}
+function clearDraft() {
+  localStorage.removeItem(draftKey());
+  syncComposerDraftState();
+}
 
 async function applyExtensionDraftFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -7285,6 +8012,7 @@ async function applyExtensionDraftFromUrl() {
     input.value = display;
     updateTokenCount();
     autosizeTextarea();
+    syncComposerDraftState();
     saveDraft();
     const shouldRun = params.get('autorun') === '1' || draft.auto_run === true;
     try {
@@ -7297,6 +8025,7 @@ async function applyExtensionDraftFromUrl() {
       input.value = '';
       updateTokenCount();
       autosizeTextarea();
+      syncComposerDraftState();
       clearDraft();
       sendRaw(message, display, []);
     } else {
@@ -7779,6 +8508,7 @@ async function runAgentLoop() {
   input.value = '';
   updateTokenCount();
   autosizeTextarea();
+  syncComposerDraftState();
 
   agentLoopRunning = true;
   agentLoopStopRequested = false;
@@ -8190,6 +8920,7 @@ input.addEventListener('input', () => {
   maybeShowPicker();
   scheduleUrlDetect();
   autosizeTextarea();
+  syncComposerDraftState();
 });
 
 // ===== sessions sidebar =====
@@ -8231,7 +8962,8 @@ let searchTimer = null;
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
-    updateShellNav(searchInput.value.trim() ? 'search' : undefined);
+    updateShellNav(searchInput.value.trim() ? (codeMode ? 'code' : (archivedView ? 'records' : 'search')) : undefined);
+    syncSearchOpenState();
     refreshSessions();
   }, 300);
 });
@@ -8282,6 +9014,234 @@ async function refreshTags() {
   } catch {}
 }
 
+function cwdProjectLabel(cwd) {
+  const label = projectNameFromCwdValue(cwd || '');
+  return label || 'New project';
+}
+
+function isGeneralChatCwd(cwd) {
+  const raw = (cwd || '').trim();
+  const label = cwdProjectLabel(raw).toLowerCase();
+  return !raw || raw === '~' || label === 'heng' || label === 'home';
+}
+
+function codeProjectKey(cwd) {
+  return (cwd || '').trim() || '~';
+}
+
+function currentCwdKey() {
+  return codeProjectKey(cwdInput?.value || '');
+}
+
+function renderCodeSessionRow(s) {
+  const title = escapeHtml(s.title || '新会话');
+  return `
+    <button type="button" class="cw-project-session ${s.id === sessionId ? 'active' : ''}" data-id="${escapeHtml(s.id)}" title="${title}">
+      <span class="cw-session-title truncate">${title}</span>
+      <span class="cw-session-time">${escapeHtml(formatTime(s.updated_at))}</span>
+    </button>
+  `;
+}
+
+function searchResultIcon(kind = 'chat') {
+  if (kind === 'project') {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>';
+  }
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg>';
+}
+
+function renderSearchOverlayResults(list = [], q = '') {
+  if (!cwSearchOverlayResults || !document.body.classList.contains('cw-search-open')) return;
+  const rows = (list || []).slice(0, 14);
+  if (!rows.length) {
+    cwSearchOverlayResults.innerHTML = `<div class="cw-search-empty">${q ? '无匹配结果' : '暂无会话'}</div>`;
+    return;
+  }
+  cwSearchOverlayResults.innerHTML = rows.map(s => {
+    const projectLike = codeMode && !isGeneralChatCwd(s.cwd);
+    const title = escapeHtml(s.title || '新会话');
+    return `
+      <button type="button" class="cw-search-result" data-search-session="${escapeHtml(s.id)}" title="${title}">
+        <span class="cw-search-result-icon">${searchResultIcon(projectLike ? 'project' : 'chat')}</span>
+        <span class="cw-search-result-title">${title}</span>
+        <span class="cw-search-result-time">${escapeHtml(formatTime(s.updated_at))}</span>
+      </button>
+    `;
+  }).join('');
+  cwSearchOverlayResults.querySelectorAll('[data-search-session]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.searchSession;
+      closeSearchOverlay(true);
+      loadSession(id);
+    });
+  });
+}
+
+function renderSessionActionMenu(s) {
+  const id = escapeHtml(s.id);
+  const tags = escapeHtml((s.tags || []).join(','));
+  return `
+    <button type="button" class="cw-session-menu-btn" data-session-menu="${id}" aria-label="会话操作" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/></svg>
+    </button>
+    <div class="cw-session-actions hidden" data-session-actions="${id}">
+      <button type="button" data-pin="${id}" data-pinned="${s.pinned}" class="cw-session-action">${s.pinned ? '取消置顶' : '置顶'}</button>
+      ${mobileQuestionMode ? '' : `
+        <button type="button" data-archive="${id}" data-archived="${s.archived}" class="cw-session-action">${s.archived ? '取消归档' : '归档'}</button>
+        <button type="button" data-tag-edit="${id}" data-tags="${tags}" class="cw-session-action">标签</button>
+        <button type="button" data-del="${id}" class="cw-session-action">删除</button>
+      `}
+    </div>
+  `;
+}
+
+function bindSessionMenuToggles(root = sessionItems) {
+  root.querySelectorAll('[data-session-menu]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleSessionActionMenu(btn, root);
+    });
+  });
+}
+
+function toggleSessionActionMenu(btn, root = sessionItems) {
+  const menu = btn?.parentElement?.querySelector('.cw-session-actions');
+  const open = menu?.classList.contains('hidden');
+  root.querySelectorAll('.cw-session-actions').forEach(m => m.classList.add('hidden'));
+  root.querySelectorAll('[data-session-menu]').forEach(b => b.setAttribute('aria-expanded', 'false'));
+  if (menu && open) {
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+}
+
+function renderProjectGroup(group, options = {}) {
+  const key = codeProjectKey(group.cwd);
+  const expanded = !!codeProjectExpanded[key];
+  const sessions = group.sessions || [];
+  const active = key === currentCwdKey();
+  const hasSavedCollapseState = Object.prototype.hasOwnProperty.call(codeProjectCollapsed, key);
+  const collapsed = hasSavedCollapseState ? !!codeProjectCollapsed[key] : !active;
+  const limit = 7;
+  const visible = collapsed ? [] : (expanded ? sessions : sessions.slice(0, limit));
+  const hiddenCount = collapsed ? 0 : Math.max(0, sessions.length - visible.length);
+  const emptyText = options.emptyText || '暂无项目会话';
+  return `
+    <div class="cw-project-group ${collapsed ? 'collapsed' : ''}" data-project-group="${escapeHtml(key)}">
+      <button type="button" class="cw-project-row ${active ? 'active' : ''}" data-cwd-select="${escapeHtml(group.cwd || '')}" title="${escapeHtml(group.cwd || group.label || '')}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>
+        <span class="cw-project-name">${escapeHtml(group.label || cwdProjectLabel(group.cwd))}</span>
+        <span class="cw-project-count">${sessions.length || ''}</span>
+        <span class="cw-project-chevron" data-project-collapse="${escapeHtml(key)}" aria-label="${collapsed ? '展开项目会话' : '折叠项目会话'}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </span>
+      </button>
+      <div class="cw-project-session-list ${collapsed ? 'hidden' : ''}">
+        ${visible.length ? visible.map(renderCodeSessionRow).join('') : `<div class="px-2 py-2 text-[12px]" style="color:var(--text-subtle);">${emptyText}</div>`}
+        ${hiddenCount > 0 || expanded && sessions.length > limit ? `<button type="button" class="cw-show-more" data-project-toggle="${escapeHtml(key)}">${expanded ? '收起' : `展开 ${hiddenCount} 条`}</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderCodeGeneralChatSection(sessions = []) {
+  const limit = 10;
+  const visible = sessions.slice(0, limit);
+  const hiddenCount = Math.max(0, sessions.length - visible.length);
+  return `
+    <section class="cw-code-chat-section">
+      <div class="cw-sidebar-section-title">对话</div>
+      <div class="cw-general-session-list">
+        ${visible.length ? visible.map(renderCodeSessionRow).join('') : '<div class="px-2 py-2 text-[12px]" style="color:var(--text-subtle);">暂无普通对话</div>'}
+        ${hiddenCount > 0 ? `<div class="cw-general-more">… 还有 ${hiddenCount} 条</div>` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function renderCodeProjectSessionList(list) {
+  const projectGroups = [];
+  const projectMap = new Map();
+  const generalSessions = [];
+
+  (list || []).forEach(s => {
+    if (isGeneralChatCwd(s.cwd)) {
+      generalSessions.push(s);
+      return;
+    }
+    const key = codeProjectKey(s.cwd);
+    if (!projectMap.has(key)) {
+      const group = { cwd: s.cwd || '', label: cwdProjectLabel(s.cwd), sessions: [] };
+      projectMap.set(key, group);
+      projectGroups.push(group);
+    }
+    projectMap.get(key).sessions.push(s);
+  });
+
+  const currentKey = currentCwdKey();
+  const currentRaw = (cwdInput?.value || '').trim();
+  if (currentRaw && !isGeneralChatCwd(currentRaw) && !projectMap.has(currentKey)) {
+    projectGroups.unshift({ cwd: currentRaw, label: cwdProjectLabel(currentRaw), sessions: [] });
+  }
+
+  if (!projectGroups.length && !generalSessions.length) {
+    sessionItems.innerHTML = '<div class="text-xs text-center py-6" style="color:var(--text-subtle);">暂无代码工作区会话</div>';
+    return;
+  }
+
+  sessionItems.innerHTML = `
+    <div class="cw-code-sidebar">
+      <section>
+        <div class="cw-sidebar-section-title">项目</div>
+        ${projectGroups.length ? projectGroups.map(group => renderProjectGroup(group)).join('') : '<div class="px-2 text-[12px]" style="color:var(--text-subtle);">还没有项目会话</div>'}
+      </section>
+      ${generalSessions.length ? renderCodeGeneralChatSection(generalSessions) : ''}
+    </div>
+  `;
+
+  sessionItems.querySelectorAll('.cw-project-session').forEach(btn => {
+    btn.addEventListener('click', () => loadSession(btn.dataset.id));
+  });
+  sessionItems.querySelectorAll('[data-project-collapse]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const key = btn.dataset.projectCollapse;
+      codeProjectCollapsed[key] = !codeProjectCollapsed[key];
+      LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
+      renderCodeProjectSessionList(list);
+    });
+  });
+  sessionItems.querySelectorAll('[data-cwd-select]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const cwd = btn.dataset.cwdSelect || '';
+      if (cwdInput && cwd && cwd !== '~') {
+        cwdInput.value = cwd;
+        const selectedProjectKey = codeProjectKey(cwd);
+        (list || []).forEach(s => {
+          if (!isGeneralChatCwd(s.cwd)) {
+            const key = codeProjectKey(s.cwd);
+            codeProjectCollapsed[key] = key !== selectedProjectKey;
+          }
+        });
+        codeProjectCollapsed[selectedProjectKey] = false;
+        LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
+      }
+      updateWorkspaceLabels();
+      refreshGitStatus();
+      refreshSessions();
+    });
+  });
+  sessionItems.querySelectorAll('[data-project-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.projectToggle;
+      codeProjectExpanded[key] = !codeProjectExpanded[key];
+      LS.set(CODE_PROJECT_EXPANDED_KEY, codeProjectExpanded);
+      renderCodeProjectSessionList(list);
+    });
+  });
+}
+
 async function refreshSessions() {
   if (milestoneView) {
     updateViewTabs();
@@ -8305,32 +9265,28 @@ async function refreshSessions() {
     if (!r.ok) return;
     const list = await r.json();
     if (cliView || requestId !== sessionListRequestId || isArchivedRequest !== archivedView) return;
+    renderSearchOverlayResults(list, q);
+    if (codeMode && !isArchivedRequest && !activeTagFilter) {
+      renderCodeProjectSessionList(list);
+      return;
+    }
     if (list.length === 0) {
       sessionItems.innerHTML = `<div class="text-xs text-gray-400 text-center py-4">${q ? '无匹配' : (archivedView ? '无归档' : '暂无历史')}</div>`;
       return;
     }
     sessionItems.innerHTML = list.map(s => `
-      <div class="session-item mb-1 p-2 rounded-lg border border-transparent hover:bg-gray-50 dark:hover:bg-slate-700 cursor-pointer group ${s.id === sessionId ? 'active' : ''}" data-id="${s.id}">
-        <div class="flex items-start justify-between gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="text-sm truncate flex items-center gap-1">
-              ${s.pinned ? '<span title="已置顶">📌</span>' : ''}
-              <span>${escapeHtml(s.title)}</span>
-            </div>
-            <div class="text-xs text-gray-400 mt-0.5 flex flex-wrap gap-1 items-center">
-              <span>${formatTime(s.updated_at)}</span>
-              ${s.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('')}
-            </div>
+      <div class="session-item cw-flat-session mb-1 rounded-lg cursor-pointer group ${s.id === sessionId ? 'active' : ''}" data-id="${escapeHtml(s.id)}">
+        <div class="cw-flat-session-row">
+          <div class="cw-flat-session-title" title="${escapeHtml(s.title || '新会话')}">
+            ${s.pinned ? '<span title="已置顶">📌</span>' : ''}
+            <span>${escapeHtml(s.title || '新会话')}</span>
           </div>
-          <div class="flex flex-col items-end gap-0.5 opacity-0 group-hover:opacity-100 text-gray-400">
-            <button data-pin="${s.id}" data-pinned="${s.pinned}" title="${s.pinned?'取消置顶':'置顶'}" class="text-xs hover:text-orange-500">${s.pinned?'📌':'📍'}</button>
-            ${mobileQuestionMode ? '' : `
-              <button data-archive="${s.id}" data-archived="${s.archived}" title="${s.archived?'取消归档':'归档'}" class="text-xs hover:text-blue-500">${s.archived?'📤':'📥'}</button>
-              <button data-tag-edit="${s.id}" data-tags="${escapeHtml(s.tags.join(','))}" title="标签" class="text-xs hover:text-purple-500">🏷</button>
-              <button data-del="${s.id}" class="text-xs hover:text-red-500" title="删除">🗑</button>
-            `}
+          <div class="cw-flat-session-meta">
+            <span class="cw-flat-session-date">${escapeHtml(formatTime(s.updated_at))}</span>
+            ${renderSessionActionMenu(s)}
           </div>
         </div>
+        ${(s.tags || []).length ? `<div class="cw-flat-tags">${s.tags.map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
       </div>
     `).join('');
 
@@ -8340,6 +9296,7 @@ async function refreshSessions() {
         loadSession(el.dataset.id);
       });
     });
+    bindSessionMenuToggles(sessionItems);
     sessionItems.querySelectorAll('button[data-del]').forEach(b => {
       b.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -8478,7 +9435,7 @@ async function renderMilestones() {
 }
 
 function highlightActiveSession() {
-  sessionItems.querySelectorAll('.session-item').forEach(el => {
+  sessionItems.querySelectorAll('.session-item, .cw-project-session').forEach(el => {
     el.classList.toggle('active', el.dataset.id === sessionId);
   });
 }
@@ -8503,6 +9460,7 @@ async function loadSession(id) {
     lastUserIndex = -1;
     resetSessionTokens();
     if (data.cwd) cwdInput.value = data.cwd;
+    updateWorkspaceLabels();
     refreshMemories();
     suggestTitleBtn.classList.remove('hidden');
     chatInner.innerHTML = '';
@@ -8525,6 +9483,7 @@ async function loadSession(id) {
     if (!data.events.length) chatInner.appendChild(welcome);
     forceScrollBottom();
     highlightActiveSession();
+    if (codeMode) refreshSessions();
     closeMobileSidebar();
     restoreActiveAgentLoopForSession();
   } catch (e) { console.warn(e); }
@@ -10090,9 +11049,10 @@ if (poAddCurrentSession) poAddCurrentSession.addEventListener('click', () => poA
 document.addEventListener('keydown', (e) => {
   const isMac = navigator.platform.includes('Mac');
   const mod = isMac ? e.metaKey : e.ctrlKey;
-  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); searchInput.focus(); searchInput.select(); return; }
+  if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); showSearchField(); refreshSessions(); return; }
   if (mod && e.key.toLowerCase() === 'n') { e.preventDefault(); startNewSession(); return; }
   if (e.key === 'Escape') {
+    if (document.body.classList.contains('cw-search-open')) { closeSearchOverlay(true); return; }
     if (!artifactPanel.classList.contains('hidden')) {
       if (artifactPanel.classList.contains('fullscreen')) { toggleArtifactFullscreen(); }
       else { hideArtifactPanel(); }
@@ -10653,6 +11613,8 @@ function closeMobileSidebar() {
 if (toggleSidebar) toggleSidebar.addEventListener('click', () => setSidebarOpen(!sidebar.classList.contains('open')));
 if (closeSidebarBtn) closeSidebarBtn.addEventListener('click', () => setSidebarOpen(false));
 if (sidebarScrim) sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+if (cwSearchOverlayBackdrop) cwSearchOverlayBackdrop.addEventListener('click', () => closeSearchOverlay(true));
+if (cwSearchCloseBtn) cwSearchCloseBtn.addEventListener('click', () => closeSearchOverlay(true));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && sidebar?.classList.contains('open') && window.innerWidth <= 768) {
     setSidebarOpen(false);
@@ -10733,6 +11695,16 @@ function updateShellNav(active) {
   setText(sessionSectionTitle, sidebarSectionLabel());
 }
 
+function syncSearchOpenState() {
+  const open = !!sidebarSearchRow && !sidebarSearchRow.classList.contains('hidden');
+  document.body.classList.toggle('cw-search-open', open);
+  cwSearchOverlayBackdrop?.classList.toggle('hidden', !open);
+}
+
+function syncAdvancedOpenState() {
+  document.body.classList.toggle('cw-advanced-open', !!advancedBar && !advancedBar.classList.contains('hidden'));
+}
+
 function updateWelcomeCopy() {
   if (!welcome) return;
   if (codeMode) {
@@ -10791,6 +11763,7 @@ function setCodeMode(enabled, options = {}) {
     advancedBar.classList.remove('hidden');
     headerMoreBtn?.classList.add('toolbar-btn-active');
   }
+  syncAdvancedOpenState();
   updateWorkspaceLabels();
   updateWelcomeCopy();
   updateShellNav(codeMode ? 'code' : undefined);
@@ -10799,6 +11772,8 @@ function setCodeMode(enabled, options = {}) {
 function showSearchField() {
   if (!sidebarSearchRow || !searchInput) return;
   sidebarSearchRow.classList.remove('hidden');
+  syncSearchOpenState();
+  renderSearchOverlayResults([], searchInput.value.trim());
   searchInput.focus();
   searchInput.select();
 }
@@ -10807,11 +11782,21 @@ function hideSearchFieldIfEmpty() {
   if (!sidebarSearchRow || !searchInput?.value.trim()) {
     sidebarSearchRow?.classList.add('hidden');
   }
+  syncSearchOpenState();
+}
+
+function closeSearchOverlay(clear = true) {
+  if (clear && searchInput) searchInput.value = '';
+  sidebarSearchRow?.classList.add('hidden');
+  syncSearchOpenState();
+  updateShellNav();
+  refreshSessions();
 }
 
 function syncEmptyShellState() {
   const empty = !!(welcome && chatInner && welcome.parentElement === chatInner);
   document.body.classList.toggle('cw-empty', empty);
+  syncComposerDraftState();
   return empty;
 }
 
@@ -10847,13 +11832,8 @@ function activateShellView(view) {
     return;
   }
   if (view === 'search') {
-    codeMode = false;
-    archivedView = false;
-    cliView = false;
-    milestoneView = false;
-    setCodeMode(false);
     showSearchField();
-    updateShellNav('search');
+    updateShellNav(codeMode ? 'code' : (archivedView ? 'records' : 'search'));
     updateViewTabs();
     refreshSessions();
     closeMobileSidebar();
@@ -10892,7 +11872,43 @@ headerMoreBtn.addEventListener('click', () => {
   setCodeMode(true, { keepAdvanced: true });
   advancedBar.classList.toggle('hidden');
   headerMoreBtn.classList.toggle('toolbar-btn-active', !advancedBar.classList.contains('hidden'));
+  syncAdvancedOpenState();
 });
+
+function setMoreToolsOpen(open) {
+  if (!composerMoreToolsMenu || !composerMoreToolsBtn) return;
+  composerMoreToolsMenu.classList.toggle('hidden', !open);
+  composerMoreToolsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+composerMoreToolsBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  setMoreToolsOpen(composerMoreToolsMenu?.classList.contains('hidden'));
+});
+promptOptimizeBtn?.addEventListener('click', () => setMoreToolsOpen(false));
+agentLoopBtn?.addEventListener('click', () => setMoreToolsOpen(false));
+
+document.addEventListener('click', (e) => {
+  if (!composerMoreToolsMenu || composerMoreToolsMenu.classList.contains('hidden')) return;
+  if (e.target.closest('.cw-more-tools')) return;
+  setMoreToolsOpen(false);
+});
+
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-session-menu]') || e.target.closest('.cw-session-actions')) return;
+  sessionItems?.querySelectorAll('.cw-session-actions').forEach(menu => menu.classList.add('hidden'));
+  sessionItems?.querySelectorAll('[data-session-menu]').forEach(btn => btn.setAttribute('aria-expanded', 'false'));
+});
+
+sessionItems?.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-session-menu]');
+  if (!btn || !sessionItems.contains(btn)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+  toggleSessionActionMenu(btn, sessionItems);
+}, true);
 
 cwChatNav?.addEventListener('click', () => {
   codeMode = false;
@@ -10909,13 +11925,8 @@ cwChatNav?.addEventListener('click', () => {
 });
 
 cwSearchNav?.addEventListener('click', () => {
-  codeMode = false;
-  archivedView = false;
-  cliView = false;
-  milestoneView = false;
-  setCodeMode(false);
   showSearchField();
-  updateShellNav('search');
+  updateShellNav(codeMode ? 'code' : (archivedView ? 'records' : 'search'));
   updateViewTabs();
   refreshSessions();
   closeMobileSidebar();
@@ -10986,6 +11997,7 @@ document.querySelectorAll('.cw-quick-action').forEach(btn => {
     input.focus();
     updateTokenCount();
     autosizeTextarea();
+    syncComposerDraftState();
     input.setSelectionRange(p.length, p.length);
   });
 });
@@ -10999,6 +12011,7 @@ document.querySelectorAll('.empty-card').forEach(card => {
     input.focus();
     updateTokenCount();
     autosizeTextarea();
+    syncComposerDraftState();
     input.setSelectionRange(p.length, p.length);
   });
 });
