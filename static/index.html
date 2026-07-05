@@ -3265,11 +3265,217 @@
     min-width: 0;
   }
   .cw-general-more {
+    width: max-content;
     padding: 6px 8px 2px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
     color: #8f8983;
     font-size: 12.5px;
     font-weight: 560;
     line-height: 1.35;
+    cursor: pointer;
+  }
+  .cw-general-more:hover {
+    background: #eeedeb;
+    color: #3f3b37;
+  }
+  .cw-project-manager {
+    position: fixed;
+    top: clamp(92px, 18vh, 150px);
+    left: calc(var(--cw-sidebar-width) + ((100vw - var(--cw-sidebar-width)) / 2));
+    z-index: 75;
+    width: min(520px, calc(100vw - var(--cw-sidebar-width) - 88px));
+    max-height: min(620px, calc(100vh - 78px));
+    overflow: hidden;
+    transform: translateX(-50%);
+    border: 1px solid #e4ded7;
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 22px 60px rgba(38, 31, 26, .14);
+  }
+  .cw-project-manager-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 13px 14px 10px;
+    border-bottom: 1px solid #eee9e3;
+  }
+  .cw-project-manager-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: #2e2b28;
+  }
+  .cw-project-manager-sub {
+    margin-top: 2px;
+    font-size: 11.5px;
+    color: #8d8780;
+  }
+  .cw-project-manager-close {
+    width: 30px;
+    height: 30px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: #817b75;
+    cursor: pointer;
+  }
+  .cw-project-manager-close:hover {
+    background: #f1efed;
+    color: #2f2c29;
+  }
+  .cw-project-manager-body {
+    display: grid;
+    gap: 10px;
+    padding: 12px 14px 14px;
+  }
+  .cw-project-add-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+  .cw-project-add-row input,
+  .cw-project-perm-select {
+    min-height: 36px;
+    min-width: 0;
+    border: 1px solid #e1dbd4;
+    border-radius: 10px;
+    background: #fff;
+    color: #34302d;
+    font-size: 13px;
+    padding: 0 10px;
+    outline: 0;
+  }
+  .cw-project-add-row input:focus,
+  .cw-project-perm-select:focus {
+    border-color: #cfc6bd;
+    box-shadow: 0 0 0 3px rgba(77, 70, 63, .07);
+  }
+  .cw-project-add-btn {
+    min-height: 36px;
+    padding: 0 12px;
+    border: 1px solid #ded8d1;
+    border-radius: 10px;
+    background: #f7f5f2;
+    color: #34302d;
+    font-size: 12.5px;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  .cw-project-add-btn:hover {
+    background: #efede9;
+  }
+  .cw-project-manager-list {
+    display: grid;
+    gap: 2px;
+    max-height: 250px;
+    overflow-y: auto;
+    padding: 2px 0;
+  }
+  .cw-project-manager-item {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #373431;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-project-manager-item:hover,
+  .cw-project-manager-item.active {
+    background: #f0efed;
+  }
+  .cw-project-manager-item svg {
+    width: 16px;
+    height: 16px;
+    color: #77716b;
+  }
+  .cw-project-manager-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 620;
+  }
+  .cw-project-manager-path {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #9b958e;
+    font-size: 11px;
+    font-weight: 520;
+  }
+  .cw-project-manager-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-top: 4px;
+    border-top: 1px solid #eee9e3;
+  }
+  .cw-project-manager-meta span {
+    color: #8b857e;
+    font-size: 12px;
+    font-weight: 620;
+  }
+  .cw-branch-panel {
+    width: min(360px, calc(100vw - var(--cw-sidebar-width) - 88px));
+  }
+  .cw-branch-list {
+    max-height: 310px;
+  }
+  .cw-branch-item {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: #373431;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-branch-item:hover,
+  .cw-branch-item.active {
+    background: #f0efed;
+  }
+  .cw-branch-item svg {
+    width: 16px;
+    height: 16px;
+    color: #77716b;
+  }
+  .cw-branch-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 620;
+  }
+  .cw-branch-current {
+    color: #928c85;
+    font-size: 12px;
+    font-weight: 620;
+  }
+  @media (max-width: 768px) {
+    .cw-project-manager {
+      top: 72px;
+      left: 50%;
+      width: calc(100vw - 32px);
+      max-height: calc(100vh - 96px);
+    }
+    .cw-branch-panel {
+      width: calc(100vw - 32px);
+    }
   }
   .cw-project-session {
     display: flex;
@@ -3324,6 +3530,64 @@
   }
   body.code-mode .cw-workspace-card {
     display: none !important;
+  }
+  #advancedBar {
+    display: none !important;
+  }
+  body.code-mode:not(.cw-empty) .cw-composer-code-context {
+    display: none !important;
+  }
+  body:not(.cw-empty) #chat,
+  body:not(.cw-empty) footer {
+    background: #fff !important;
+  }
+  body.code-mode:not(.cw-empty) .composer {
+    background: #fff !important;
+    border-color: #ded4cb !important;
+    box-shadow: 0 12px 36px rgba(61, 52, 43, .08) !important;
+  }
+  button.cw-context-chip {
+    font-family: inherit;
+    cursor: pointer;
+  }
+  button.cw-context-chip:hover {
+    background: #f1eeeb !important;
+  }
+  button.cw-context-chip:focus-visible {
+    outline: 2px solid rgba(63, 58, 53, .2);
+    outline-offset: 2px;
+  }
+  .cw-search-row input {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .cw-search-row input:focus {
+    background: transparent !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .composer-send {
+    background: #2f2c29 !important;
+    color: #fff !important;
+  }
+  .composer-send:hover {
+    background: #1f1d1b !important;
+    color: #fff !important;
+    transform: translateY(-1px) !important;
+  }
+  .composer-send:disabled {
+    background: #d7d2cc !important;
+    color: #8e8881 !important;
+    transform: none !important;
+  }
+  .composer-btn-stop {
+    background: #4b4641 !important;
+    color: #fff !important;
+  }
+  .composer-btn-stop:hover {
+    background: #34312e !important;
+    color: #fff !important;
   }
   .cw-local-footer {
     min-height: 66px !important;
@@ -3459,10 +3723,10 @@
   .cw-composer-code-context {
     gap: 18px !important;
   }
-  body.code-mode.cw-empty:not(.cw-has-draft) .composer {
+  body.code-mode.cw-empty .composer {
     margin-bottom: 38px !important;
   }
-  body.code-mode.cw-empty:not(.cw-has-draft) .cw-composer-code-context {
+  body.code-mode.cw-empty .cw-composer-code-context {
     position: absolute;
     left: 18px;
     right: 18px;
@@ -3481,8 +3745,8 @@
     font-size: 12.5px !important;
     font-weight: 600 !important;
   }
-  body.cw-has-draft .cw-quick-actions,
-  body.cw-has-draft .cw-composer-code-context {
+  body:not(.cw-empty) .cw-quick-actions,
+  body:not(.cw-empty) .cw-composer-code-context {
     display: none !important;
   }
   .cw-more-tools {
@@ -3713,6 +3977,44 @@
       <option value="custom">⚙️ 自定义</option>
     </select>
   </div>
+  <div id="cwProjectManagerPanel" class="cw-project-manager hidden" role="dialog" aria-label="项目管理">
+    <div class="cw-project-manager-head">
+      <div class="min-w-0">
+        <div class="cw-project-manager-title">项目管理</div>
+        <div class="cw-project-manager-sub">选择当前工作目录，或添加一个本地项目</div>
+      </div>
+      <button type="button" id="cwProjectManagerClose" class="cw-project-manager-close" aria-label="关闭项目管理">×</button>
+    </div>
+    <div class="cw-project-manager-body">
+      <div class="cw-project-add-row">
+        <input id="cwProjectManagerInput" placeholder="输入项目路径，例如 /Users/heng/claude-web" />
+        <button type="button" id="cwProjectManagerAdd" class="cw-project-add-btn">添加</button>
+      </div>
+      <div id="cwProjectManagerList" class="cw-project-manager-list"></div>
+      <div class="cw-project-manager-meta">
+        <span>权限</span>
+        <select id="cwProjectPermSelect" class="cw-project-perm-select">
+          <option value="free">🔓 CLI 默认</option>
+          <option value="acceptEdits">✏️ 允许编辑</option>
+          <option value="plan">📋 计划</option>
+          <option value="readonly">🔒 只读</option>
+          <option value="custom">⚙️ 自定义</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div id="cwBranchPanel" class="cw-project-manager cw-branch-panel hidden" role="dialog" aria-label="分支选择">
+    <div class="cw-project-manager-head">
+      <div class="min-w-0">
+        <div class="cw-project-manager-title">选择分支</div>
+        <div class="cw-project-manager-sub" id="cwBranchProjectLabel">当前项目</div>
+      </div>
+      <button type="button" id="cwBranchPanelClose" class="cw-project-manager-close" aria-label="关闭分支选择">×</button>
+    </div>
+    <div class="cw-project-manager-body">
+      <div id="cwBranchList" class="cw-project-manager-list cw-branch-list"></div>
+    </div>
+  </div>
   <div id="mobileModeBanner" class="mobile-mode-banner">
     <span><strong>手机问答模式</strong> · 可提问、查看结果，并从已保存项目切换目录；管理功能仅电脑本机可用。</span>
     <button id="dismissMobileBanner" class="sb-icon-btn" type="button" title="关闭提示" aria-label="关闭手机问答提示">×</button>
@@ -3800,18 +4102,18 @@
               </div>
             </div>
             <span class="cw-composer-code-context" id="cwComposerCodeContext">
-              <span class="cw-context-chip">
+              <button type="button" class="cw-context-chip" id="cwComposerProjectBtn" title="选择项目">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>
                 <span id="cwComposerProjectName">claude-web</span>
-              </span>
-              <span class="cw-context-chip">
+              </button>
+              <button type="button" class="cw-context-chip" id="cwComposerBranchBtn" title="选择分支">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a4 4 0 0 0 4 4h2"/><path d="M18 7v3a4 4 0 0 1-4 4h-2"/><path d="M12 14v3"/></svg>
                 <span id="cwComposerBranchName">main</span>
-              </span>
-              <span class="cw-context-chip">
+              </button>
+              <button type="button" class="cw-context-chip" id="cwComposerPermBtn" title="选择权限模式">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M7 7v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V7"/><path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>
                 <span id="cwComposerPermLabel">本地模式</span>
-              </span>
+              </button>
             </span>
             <div id="tokenCounter" class="text-[10px] ml-1" style="color:var(--text-subtle);">0 tokens</div>
           </div>
@@ -4735,6 +5037,9 @@ if (!LS.get(CODE_PROJECT_COLLAPSE_DEFAULTS_KEY, false)) {
   LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
   LS.set(CODE_PROJECT_COLLAPSE_DEFAULTS_KEY, true);
 }
+let codeGeneralVisibleCount = 10;
+const EXTRA_PROJECTS_KEY = 'cwExtraProjectsV1';
+let extraCwdOptions = LS.get(EXTRA_PROJECTS_KEY, []);
 
 // Per-turn tracking (for edit/regenerate/restore)
 let currentUserIndex = 0;
@@ -4767,6 +5072,19 @@ const cwHeaderBranchName = $('cwHeaderBranchName');
 const cwComposerProjectName = $('cwComposerProjectName');
 const cwComposerBranchName = $('cwComposerBranchName');
 const cwComposerPermLabel = $('cwComposerPermLabel');
+const cwComposerProjectBtn = $('cwComposerProjectBtn');
+const cwComposerBranchBtn = $('cwComposerBranchBtn');
+const cwComposerPermBtn = $('cwComposerPermBtn');
+const cwProjectManagerPanel = $('cwProjectManagerPanel');
+const cwProjectManagerClose = $('cwProjectManagerClose');
+const cwProjectManagerInput = $('cwProjectManagerInput');
+const cwProjectManagerAdd = $('cwProjectManagerAdd');
+const cwProjectManagerList = $('cwProjectManagerList');
+const cwProjectPermSelect = $('cwProjectPermSelect');
+const cwBranchPanel = $('cwBranchPanel');
+const cwBranchPanelClose = $('cwBranchPanelClose');
+const cwBranchProjectLabel = $('cwBranchProjectLabel');
+const cwBranchList = $('cwBranchList');
 const fileInput = $('fileInput'), attachBtn = $('attachBtn'), attachmentsEl = $('attachments');
 const webSearchBtn = $('webSearchBtn');
 const docInput = $('docInput');
@@ -8885,6 +9203,7 @@ form.addEventListener('submit', (e) => {
   input.value = '';
   updateTokenCount();
   autosizeTextarea();
+  syncComposerDraftState();
   if (pendingSlashFork && pendingImages.length === 0 && readyDocs === 0 && loadingDocs === 0) {
     const payload = slashForkPayloadFor(text);
     pendingSlashFork = null;
@@ -9145,15 +9464,17 @@ function renderProjectGroup(group, options = {}) {
 }
 
 function renderCodeGeneralChatSection(sessions = []) {
-  const limit = 10;
+  const step = 20;
+  const limit = Math.max(10, Math.min(codeGeneralVisibleCount, sessions.length || 10));
   const visible = sessions.slice(0, limit);
   const hiddenCount = Math.max(0, sessions.length - visible.length);
+  const nextCount = Math.min(step, hiddenCount);
   return `
     <section class="cw-code-chat-section">
       <div class="cw-sidebar-section-title">对话</div>
       <div class="cw-general-session-list">
         ${visible.length ? visible.map(renderCodeSessionRow).join('') : '<div class="px-2 py-2 text-[12px]" style="color:var(--text-subtle);">暂无普通对话</div>'}
-        ${hiddenCount > 0 ? `<div class="cw-general-more">… 还有 ${hiddenCount} 条</div>` : ''}
+        ${hiddenCount > 0 ? `<button type="button" class="cw-general-more" data-general-more>… 查看更多 ${nextCount} 条 · 剩余 ${hiddenCount}</button>` : ''}
       </div>
     </section>
   `;
@@ -9213,23 +9534,14 @@ function renderCodeProjectSessionList(list) {
     });
   });
   sessionItems.querySelectorAll('[data-cwd-select]').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
       const cwd = btn.dataset.cwdSelect || '';
-      if (cwdInput && cwd && cwd !== '~') {
-        cwdInput.value = cwd;
-        const selectedProjectKey = codeProjectKey(cwd);
-        (list || []).forEach(s => {
-          if (!isGeneralChatCwd(s.cwd)) {
-            const key = codeProjectKey(s.cwd);
-            codeProjectCollapsed[key] = key !== selectedProjectKey;
-          }
-        });
-        codeProjectCollapsed[selectedProjectKey] = false;
-        LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
-      }
-      updateWorkspaceLabels();
-      refreshGitStatus();
-      refreshSessions();
+      if (!cwd || cwd === '~') return;
+      const key = codeProjectKey(cwd);
+      codeProjectCollapsed[key] = !codeProjectCollapsed[key];
+      LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
+      renderCodeProjectSessionList(list);
     });
   });
   sessionItems.querySelectorAll('[data-project-toggle]').forEach(btn => {
@@ -9237,6 +9549,13 @@ function renderCodeProjectSessionList(list) {
       const key = btn.dataset.projectToggle;
       codeProjectExpanded[key] = !codeProjectExpanded[key];
       LS.set(CODE_PROJECT_EXPANDED_KEY, codeProjectExpanded);
+      renderCodeProjectSessionList(list);
+    });
+  });
+  sessionItems.querySelectorAll('[data-general-more]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const totalGeneral = generalSessions.length;
+      codeGeneralVisibleCount = Math.min(totalGeneral, Math.max(10, codeGeneralVisibleCount) + 20);
       renderCodeProjectSessionList(list);
     });
   });
@@ -9528,9 +9847,12 @@ async function refreshCwds() {
     const r = await fetch('/api/cwds');
     if (!r.ok) return;
     const list = await r.json();
-    savedCwdOptions = Array.isArray(list) ? list : [];
-    cwdList.innerHTML = list.map(p => `<option value="${escapeHtml(p)}"></option>`).join('');
+    const remote = Array.isArray(list) ? list : [];
+    const extras = Array.isArray(extraCwdOptions) ? extraCwdOptions : [];
+    savedCwdOptions = Array.from(new Set([...remote, ...extras].filter(Boolean)));
+    if (cwdList) cwdList.innerHTML = savedCwdOptions.map(p => `<option value="${escapeHtml(p)}"></option>`).join('');
     applyMobileQuestionMode();
+    renderProjectManager();
   } catch {}
 }
 async function refreshGitStatus() {
@@ -10560,6 +10882,7 @@ const ALL_TOOLS = ['Bash','Read','Write','Edit','MultiEdit','Grep','Glob','WebFe
 permSelect.value = LS.get('permMode', 'free');
 permSelect.addEventListener('change', () => {
   LS.set('permMode', permSelect.value);
+  if (cwProjectPermSelect) cwProjectPermSelect.value = permSelect.value || 'free';
   updateWorkspaceLabels();
   if (permSelect.value === 'custom') openCustomToolsModal();
 });
@@ -11633,6 +11956,198 @@ const emptyTitle = document.querySelector('.empty-title');
 const emptySubtitle = document.querySelector('.empty-subtitle');
 const emptyCards = Array.from(document.querySelectorAll('.empty-card'));
 
+function normalizeProjectList(list) {
+  return Array.from(new Set((list || []).map(v => (v || '').trim()).filter(Boolean)));
+}
+
+function allProjectOptions() {
+  return normalizeProjectList([
+    ...(savedCwdOptions || []),
+    ...(extraCwdOptions || []),
+    cwdInput?.value || ''
+  ]);
+}
+
+function projectManagerItemIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>';
+}
+
+function renderProjectManager() {
+  if (!cwProjectManagerList) return;
+  const current = (cwdInput?.value || '').trim();
+  const items = allProjectOptions();
+  if (cwProjectManagerInput && !cwProjectManagerInput.value.trim()) {
+    cwProjectManagerInput.value = current;
+  }
+  if (cwProjectPermSelect && permSelect) {
+    cwProjectPermSelect.value = permSelect.value || 'free';
+  }
+  cwProjectManagerList.innerHTML = items.length ? items.map(cwd => {
+    const name = escapeHtml(projectNameFromCwdValue(cwd));
+    const path = escapeHtml(cwd);
+    const active = cwd === current;
+    return `
+      <button type="button" class="cw-project-manager-item ${active ? 'active' : ''}" data-project-manager-cwd="${path}" title="${path}">
+        ${projectManagerItemIcon()}
+        <span class="min-w-0">
+          <span class="cw-project-manager-name">${name}</span>
+          <span class="cw-project-manager-path">${path}</span>
+        </span>
+        <span class="cw-session-time">${active ? '当前' : ''}</span>
+      </button>
+    `;
+  }).join('') : '<div class="px-2 py-3 text-[12px]" style="color:var(--text-subtle);">还没有项目，输入路径后添加</div>';
+
+  cwProjectManagerList.querySelectorAll('[data-project-manager-cwd]').forEach(btn => {
+    btn.addEventListener('click', () => selectProjectFromManager(btn.dataset.projectManagerCwd || ''));
+  });
+}
+
+function setProjectManagerOpen(open, focus = 'project') {
+  if (!cwProjectManagerPanel) return;
+  cwProjectManagerPanel.classList.toggle('hidden', !open);
+  headerMoreBtn?.classList.toggle('toolbar-btn-active', !!open);
+  if (!open) return;
+  cwBranchPanel?.classList.add('hidden');
+  cwComposerBranchBtn?.classList.remove('toolbar-btn-active');
+  renderProjectManager();
+  requestAnimationFrame(() => {
+    if (focus === 'permission') cwProjectPermSelect?.focus();
+    else cwProjectManagerInput?.focus();
+  });
+}
+
+function selectProjectFromManager(cwd) {
+  const next = (cwd || '').trim();
+  if (!next || !cwdInput) return;
+  cwdInput.value = next;
+  cwdInput.dispatchEvent(new Event('input', { bubbles: true }));
+  cwdInput.dispatchEvent(new Event('change', { bubbles: true }));
+  if (!extraCwdOptions.includes(next) && !savedCwdOptions.includes(next)) {
+    extraCwdOptions = normalizeProjectList([next, ...extraCwdOptions]);
+    LS.set(EXTRA_PROJECTS_KEY, extraCwdOptions);
+    savedCwdOptions = normalizeProjectList([next, ...savedCwdOptions]);
+  }
+  codeProjectCollapsed[codeProjectKey(next)] = false;
+  LS.set(CODE_PROJECT_COLLAPSED_KEY, codeProjectCollapsed);
+  updateWorkspaceLabels();
+  refreshGitStatus();
+  refreshSessions();
+  renderProjectManager();
+  setProjectManagerOpen(false);
+  toast(`已选择项目：${projectNameFromCwdValue(next)}`);
+}
+
+async function addProjectFromManager() {
+  const next = (cwProjectManagerInput?.value || '').trim();
+  if (!next) {
+    toast('请输入项目路径');
+    cwProjectManagerInput?.focus();
+    return;
+  }
+  extraCwdOptions = normalizeProjectList([next, ...extraCwdOptions]);
+  LS.set(EXTRA_PROJECTS_KEY, extraCwdOptions);
+  savedCwdOptions = normalizeProjectList([next, ...savedCwdOptions]);
+  if (cwdList) cwdList.innerHTML = savedCwdOptions.map(p => `<option value="${escapeHtml(p)}"></option>`).join('');
+  selectProjectFromManager(next);
+  try {
+    await fetch(`/api/projects/scan?cwd=${encodeURIComponent(next)}`, { method: 'POST' });
+  } catch {}
+}
+
+function currentEffectiveCwd() {
+  const raw = (cwdInput?.value || '').trim();
+  if (raw) return raw;
+  const label = currentProjectName();
+  const match = allProjectOptions().find(path => projectNameFromCwdValue(path) === label);
+  return match || '';
+}
+
+function branchItemIcon() {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a4 4 0 0 0 4 4h2"/><path d="M18 7v3a4 4 0 0 1-4 4h-2"/><path d="M12 14v3"/></svg>';
+}
+
+function setBranchPanelOpen(open) {
+  if (!cwBranchPanel) return;
+  cwBranchPanel.classList.toggle('hidden', !open);
+  cwComposerBranchBtn?.classList.toggle('toolbar-btn-active', !!open);
+  if (!open) return;
+  setProjectManagerOpen(false);
+  renderBranchPanel();
+}
+
+async function renderBranchPanel() {
+  if (!cwBranchList) return;
+  const cwd = currentEffectiveCwd();
+  if (cwBranchProjectLabel) {
+    cwBranchProjectLabel.textContent = cwd ? projectNameFromCwdValue(cwd) : '请先选择项目';
+  }
+  if (!cwd) {
+    cwBranchList.innerHTML = '<div class="px-2 py-3 text-[12px]" style="color:var(--text-subtle);">请先选择一个项目，再切换分支</div>';
+    return;
+  }
+  cwBranchList.innerHTML = '<div class="px-2 py-3 text-[12px]" style="color:var(--text-subtle);">正在加载分支...</div>';
+  try {
+    const r = await fetch(`/api/git/branches?cwd=${encodeURIComponent(cwd)}`);
+    const data = await r.json();
+    if (!r.ok || !data.available) throw new Error(data.detail || '当前项目不是 Git 仓库');
+    const branches = Array.isArray(data.branches) ? data.branches : [];
+    const current = data.current || currentBranchLabel();
+    if (!branches.length) {
+      cwBranchList.innerHTML = '<div class="px-2 py-3 text-[12px]" style="color:var(--text-subtle);">没有找到本地分支</div>';
+      return;
+    }
+    cwBranchList.innerHTML = branches.map(branch => {
+      const safe = escapeHtml(branch);
+      const active = branch === current;
+      return `
+        <button type="button" class="cw-branch-item ${active ? 'active' : ''}" data-branch-name="${safe}" title="${safe}">
+          ${branchItemIcon()}
+          <span class="cw-branch-name">${safe}</span>
+          <span class="cw-branch-current">${active ? '当前' : ''}</span>
+        </button>
+      `;
+    }).join('');
+    cwBranchList.querySelectorAll('[data-branch-name]').forEach(btn => {
+      btn.addEventListener('click', () => selectBranchFromPanel(cwd, btn.dataset.branchName || ''));
+    });
+  } catch (e) {
+    cwBranchList.innerHTML = `<div class="px-2 py-3 text-[12px]" style="color:var(--text-subtle);">${escapeHtml(e.message || '分支加载失败')}</div>`;
+  }
+}
+
+async function selectBranchFromPanel(cwd, branch) {
+  const nextBranch = (branch || '').trim();
+  if (!cwd || !nextBranch) return;
+  try {
+    const r = await fetch('/api/git/checkout', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ cwd, branch: nextBranch }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || '切换分支失败');
+    if (cwdInput && !cwdInput.value.trim()) {
+      cwdInput.value = cwd;
+      cwdInput.dispatchEvent(new Event('input', { bubbles: true }));
+      cwdInput.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    if (gitBar && data.available && data.branch) {
+      gitBar.classList.remove('hidden');
+      gitBar.textContent = `⎇ ${data.branch}${data.dirty ? ' ±' + data.dirty : ''}`;
+    } else {
+      await refreshGitStatus();
+    }
+    updateWorkspaceLabels();
+    refreshSessions();
+    setBranchPanelOpen(false);
+    toast(`已切换分支：${nextBranch}`);
+  } catch (e) {
+    toast(e.message || '切换分支失败', { timeout: 4200 });
+    renderBranchPanel();
+  }
+}
+
 function projectNameFromCwdValue(value) {
   const raw = (value || '').trim();
   if (!raw || raw === '~') return 'claude-web';
@@ -11869,10 +12384,8 @@ if (chatInner && window.MutationObserver) {
 }
 
 headerMoreBtn.addEventListener('click', () => {
-  setCodeMode(true, { keepAdvanced: true });
-  advancedBar.classList.toggle('hidden');
-  headerMoreBtn.classList.toggle('toolbar-btn-active', !advancedBar.classList.contains('hidden'));
-  syncAdvancedOpenState();
+  setCodeMode(true);
+  setProjectManagerOpen(cwProjectManagerPanel?.classList.contains('hidden'));
 });
 
 function setMoreToolsOpen(open) {
@@ -11975,13 +12488,61 @@ sessionMoreBtn?.addEventListener('click', (e) => {
 });
 
 cwWorkspaceProjectBtn?.addEventListener('click', () => {
-  setCodeMode(true, { forceAdvanced: true });
-  cwdInput?.focus();
+  setCodeMode(true);
+  setProjectManagerOpen(true, 'project');
 });
 
 cwWorkspacePermBtn?.addEventListener('click', () => {
-  setCodeMode(true, { forceAdvanced: true });
-  permSelect?.focus();
+  setCodeMode(true);
+  setProjectManagerOpen(true, 'permission');
+});
+
+cwComposerProjectBtn?.addEventListener('click', () => {
+  setCodeMode(true);
+  setProjectManagerOpen(true, 'project');
+});
+
+cwComposerBranchBtn?.addEventListener('click', () => {
+  setCodeMode(true);
+  setBranchPanelOpen(cwBranchPanel?.classList.contains('hidden'));
+});
+
+cwComposerPermBtn?.addEventListener('click', () => {
+  setCodeMode(true);
+  setProjectManagerOpen(true, 'permission');
+});
+
+cwProjectManagerClose?.addEventListener('click', () => setProjectManagerOpen(false));
+cwProjectManagerAdd?.addEventListener('click', addProjectFromManager);
+cwProjectManagerInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addProjectFromManager();
+  }
+});
+cwProjectPermSelect?.addEventListener('change', () => {
+  if (!permSelect) return;
+  permSelect.value = cwProjectPermSelect.value || 'free';
+  permSelect.dispatchEvent(new Event('change'));
+  updateWorkspaceLabels();
+  renderProjectManager();
+});
+
+cwBranchPanelClose?.addEventListener('click', () => setBranchPanelOpen(false));
+
+document.addEventListener('click', (e) => {
+  if (!cwProjectManagerPanel || cwProjectManagerPanel.classList.contains('hidden')) return;
+  if (e.target.closest('#cwProjectManagerPanel')) return;
+  if (e.target.closest('#headerMoreBtn') || e.target.closest('#cwComposerProjectBtn') || e.target.closest('#cwComposerBranchBtn') || e.target.closest('#cwComposerPermBtn')) return;
+  if (e.target.closest('#cwWorkspaceProjectBtn') || e.target.closest('#cwWorkspacePermBtn')) return;
+  setProjectManagerOpen(false);
+});
+
+document.addEventListener('click', (e) => {
+  if (!cwBranchPanel || cwBranchPanel.classList.contains('hidden')) return;
+  if (e.target.closest('#cwBranchPanel')) return;
+  if (e.target.closest('#cwComposerBranchBtn')) return;
+  setBranchPanelOpen(false);
 });
 
 cwWorkspaceTaskBtn?.addEventListener('click', () => {

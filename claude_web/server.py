@@ -1071,6 +1071,11 @@ class ChatRequest(BaseModel):
     docs: Optional[List[dict]] = None
 
 
+class GitCheckoutRequest(BaseModel):
+    cwd: str
+    branch: str
+
+
 class AgentLoopStartRequest(BaseModel):
     goal: str
     session_id: Optional[str] = None
@@ -7514,6 +7519,82 @@ async def git_status(request: Request, cwd: str = Query(...)):
         else:
             dirty += 1
     return {"branch": branch, "dirty": dirty, "available": True}
+
+
+async def _git_local_branches(target: str) -> List[str]:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", target, "for-each-ref", "--format=%(refname:short)", "refs/heads",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=504, detail="git branch list timed out")
+    if proc.returncode != 0:
+        return []
+    return [
+        line.strip()
+        for line in stdout.decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+
+
+@app.get("/api/git/branches")
+async def git_branches(request: Request, cwd: str = Query(...)):
+    _require_mobile_cwd_is_known(request, cwd)
+    target = os.path.expanduser(cwd)
+    if not os.path.isdir(target):
+        return {"branches": [], "available": False}
+    status = await git_status(request, cwd)
+    if not status.get("available"):
+        return {"branches": [], "available": False}
+    try:
+        branches = await _git_local_branches(target)
+    except HTTPException:
+        raise
+    except Exception:
+        return {"branches": [], "available": False}
+    return {
+        "branches": branches,
+        "current": status.get("branch") or "",
+        "dirty": status.get("dirty") or 0,
+        "available": True,
+    }
+
+
+@app.post("/api/git/checkout")
+async def git_checkout(request: Request, payload: GitCheckoutRequest):
+    _require_not_mobile_access(request, "branch switching can only be managed from this computer")
+    cwd = (payload.cwd or "").strip()
+    branch = (payload.branch or "").strip()
+    if not cwd:
+        raise HTTPException(status_code=400, detail="cwd is required")
+    if not branch:
+        raise HTTPException(status_code=400, detail="branch is required")
+    target = os.path.expanduser(cwd)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=400, detail="invalid cwd")
+    branches = await _git_local_branches(target)
+    if branch not in branches:
+        raise HTTPException(status_code=400, detail="unknown local branch")
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", target, "switch", branch,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=504, detail="git switch timed out")
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "git switch failed"
+        raise HTTPException(status_code=400, detail=detail)
+    return await git_status(request, cwd)
 
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
