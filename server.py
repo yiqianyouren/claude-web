@@ -12,6 +12,7 @@ import secrets
 import shutil
 import socket
 import sqlite3
+import struct
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,7 +26,7 @@ from contextlib import asynccontextmanager, contextmanager
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -55,12 +56,30 @@ _MOBILE_ACCESS_ENABLED_META_KEY = "mobile_access_enabled_v1"
 _MOBILE_ACCESS_CODE_HASH_META_KEY = "mobile_access_code_hash_v1"
 _MOBILE_ACCESS_CODE_EXPIRES_META_KEY = "mobile_access_code_expires_at_v1"
 _MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY = "mobile_access_code_session_ttl_v1"
+_MOBILE_ACCESS_TOTP_SECRET_META_KEY = "mobile_access_totp_secret_v1"
+_MOBILE_ACCESS_TOTP_PENDING_META_KEY = "mobile_access_totp_pending_v1"
+_MOBILE_ACCESS_TOTP_ENABLED_META_KEY = "mobile_access_totp_enabled_v1"
+_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY = "mobile_access_totp_last_counter_v1"
 _MOBILE_ACCESS_COOKIE = "cw_mobile_session"
 _MOBILE_ACCESS_CODE_TTL_SECONDS = 10 * 60
 _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS = 24 * 60 * 60
 _MOBILE_ACCESS_MAX_SESSION_TTL_SECONDS = 30 * 24 * 60 * 60
 _MOBILE_ACCESS_LOGIN_WINDOW_SECONDS = 5 * 60
 _MOBILE_ACCESS_MAX_LOGIN_FAILURES = 6
+_LOCAL_CLIENT_NETWORKS = tuple(
+    ipaddress.ip_network(value)
+    for value in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "169.254.0.0/16",
+        "198.18.0.0/15",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
 _mobile_login_failures: Dict[str, List[float]] = {}
 _EXTENSION_DRAFT_TTL_SECONDS = 10 * 60
 _EXTENSION_MAX_SELECTED_CHARS = 40_000
@@ -533,6 +552,16 @@ def init_db() -> None:
         ensure_column(conn, "sessions", "remote_session_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "sessions", "remote_ready", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "summary_cache", "TEXT")
+        ensure_column(conn, "sessions", "workspace_mode", "TEXT NOT NULL DEFAULT 'chat'")
+        conn.execute(
+            """
+            UPDATE sessions
+            SET workspace_mode = 'code'
+            WHERE COALESCE(workspace_mode, 'chat') IN ('', 'chat')
+              AND TRIM(cwd) NOT IN ('', '~', ?)
+            """,
+            (os.path.expanduser("~"),),
+        )
         ensure_column(conn, "prompts", "slash_trigger", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "session_usage", "duration_ms", "REAL NOT NULL DEFAULT 0")
         conn.execute(
@@ -679,24 +708,29 @@ def init_db() -> None:
 init_db()
 
 
-def upsert_session(session_id: str, title: str, cwd: str) -> None:
+def upsert_session(session_id: str, title: str, cwd: str, workspace_mode: Optional[str] = None) -> None:
     now = time.time()
+    normalized_mode = (workspace_mode or "").strip().lower()
+    project_bound = bool((cwd or "").strip() not in {"", "~", os.path.expanduser("~")})
+    requested_mode = "code" if normalized_mode == "code" or project_bound else ("chat" if normalized_mode == "chat" else "")
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT title, manual_title FROM sessions WHERE id = ?", (session_id,)
+            "SELECT title, manual_title, workspace_mode FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         if row is None:
+            resolved_mode = requested_mode or "chat"
             conn.execute(
-                "INSERT INTO sessions (id, title, cwd, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, title, cwd, now, now),
+                "INSERT INTO sessions (id, title, cwd, workspace_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, title, cwd, resolved_mode, now, now),
             )
         else:
             new_title = row["title"]
             if not row["manual_title"] and not new_title:
                 new_title = title
+            resolved_mode = requested_mode or row["workspace_mode"] or "chat"
             conn.execute(
-                "UPDATE sessions SET title = ?, cwd = ?, updated_at = ? WHERE id = ?",
-                (new_title, cwd, now, session_id),
+                "UPDATE sessions SET title = ?, cwd = ?, workspace_mode = ?, updated_at = ? WHERE id = ?",
+                (new_title, cwd, resolved_mode, now, session_id),
             )
 
 
@@ -1059,16 +1093,23 @@ class ChatRequest(BaseModel):
     cwd: Optional[str] = None
     images: Optional[List[str]] = None
     model: Optional[str] = None
+    effort: Optional[str] = None
     system_prompt: Optional[str] = None
     display_message: Optional[str] = None
     permission_mode: Optional[str] = None
     allowed_tools: Optional[List[str]] = None
     disallowed_tools: Optional[List[str]] = None
     force_new: Optional[bool] = None
+    workspace_mode: Optional[str] = None
     # UI-only metadata for attached docs (name/size/length/path); rendered as
     # badges on the user message. Not used to build the prompt — the doc text
     # is already embedded in `message` by the client.
     docs: Optional[List[dict]] = None
+
+
+class GitCheckoutRequest(BaseModel):
+    cwd: str
+    branch: str
 
 
 class AgentLoopStartRequest(BaseModel):
@@ -1076,6 +1117,7 @@ class AgentLoopStartRequest(BaseModel):
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     model: Optional[str] = None
+    effort: Optional[str] = None
     system_prompt: Optional[str] = None
     permission_mode: Optional[str] = None
     allowed_tools: Optional[List[str]] = None
@@ -1218,6 +1260,11 @@ class MobileAccessLoginRequest(BaseModel):
     device_label: Optional[str] = ""
 
 
+class MobileAccessTotpVerifyRequest(BaseModel):
+    code: str
+    ttl_seconds: Optional[int] = _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS
+
+
 class NotificationChannelRequest(BaseModel):
     id: str
     type: str
@@ -1242,6 +1289,7 @@ class NotificationTestRequest(BaseModel):
 def _proc_sig(
     remote_session_id: str,
     model: Optional[str],
+    effort: Optional[str],
     permission_mode: Optional[str],
     system_prompt: Optional[str],
     cwd: str,
@@ -1258,6 +1306,7 @@ def _proc_sig(
     return (
         remote_session_id or "",
         model or "",
+        _normalize_effort(effort) or "",
         permission_mode or "default",
         (system_prompt or "").strip(),
         str(Path(cwd).resolve()),
@@ -1266,10 +1315,16 @@ def _proc_sig(
     )
 
 
+def _normalize_effort(effort: Optional[str]) -> Optional[str]:
+    value = (effort or "").strip().lower()
+    return value if value in {"low", "medium", "high", "xhigh", "max"} else None
+
+
 def build_persistent_args(
     session_id: str,
     resume: bool,
     model: Optional[str],
+    effort: Optional[str],
     system_prompt: Optional[str],
     permission_mode: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
@@ -1284,9 +1339,12 @@ def build_persistent_args(
     args += ["--resume", session_id] if resume else ["--session-id", session_id]
     if model:
         args += ["--model", model]
+    normalized_effort = _normalize_effort(effort)
+    if normalized_effort:
+        args += ["--effort", normalized_effort]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
-    if permission_mode and permission_mode in ("default", "acceptEdits", "bypassPermissions", "plan"):
+    if permission_mode and permission_mode in ("default", "acceptEdits", "auto", "bypassPermissions", "plan"):
         args += ["--permission-mode", permission_mode]
     if allowed_tools:
         args += ["--allowed-tools", ",".join(allowed_tools)]
@@ -1300,6 +1358,7 @@ def build_args(
     session_id: str,
     resume: bool,
     model: Optional[str],
+    effort: Optional[str],
     system_prompt: Optional[str],
     permission_mode: Optional[str] = None,
     allowed_tools: Optional[List[str]] = None,
@@ -1322,9 +1381,12 @@ def build_args(
         args += ["--session-id", session_id]
     if model:
         args += ["--model", model]
+    normalized_effort = _normalize_effort(effort)
+    if normalized_effort:
+        args += ["--effort", normalized_effort]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
-    if permission_mode and permission_mode in ("default", "acceptEdits", "bypassPermissions", "plan"):
+    if permission_mode and permission_mode in ("default", "acceptEdits", "auto", "bypassPermissions", "plan"):
         args += ["--permission-mode", permission_mode]
     if allowed_tools:
         args += ["--allowed-tools", ",".join(allowed_tools)]
@@ -2018,8 +2080,145 @@ def _mobile_access_enabled() -> bool:
     return _bool_meta(_MOBILE_ACCESS_ENABLED_META_KEY)
 
 
-def _request_client_host(request: Request) -> str:
-    return request.client.host if request.client else ""
+def _mobile_access_totp_enabled() -> bool:
+    return _bool_meta(_MOBILE_ACCESS_TOTP_ENABLED_META_KEY) and bool(
+        _app_meta_get(_MOBILE_ACCESS_TOTP_SECRET_META_KEY)
+    )
+
+
+def _mobile_access_totp_generate_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def _mobile_access_totp_counter(at: Optional[float] = None) -> int:
+    return int((time.time() if at is None else at) // 30)
+
+
+def _mobile_access_totp_code(secret: str, counter: int) -> str:
+    padded = secret.upper() + "=" * ((8 - len(secret) % 8) % 8)
+    key = base64.b32decode(padded, casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return f"{value % 1_000_000:06d}"
+
+
+def _cli_setup_totp():
+    """CLI command to set up TOTP authenticator with QR code in terminal."""
+    import sys
+
+    # Check if TOTP is already enabled
+    if _mobile_access_totp_enabled():
+        print("⚠️  TOTP Authenticator is already enabled.", file=sys.stderr)
+        print()
+        response = input("Disable current TOTP and generate new secret? (yes/no): ").strip().lower()
+        if response not in ("yes", "y"):
+            print("Aborted.")
+            return
+        _mobile_access_clear_totp()
+        print("✓ Cleared existing TOTP configuration.\n")
+
+    # Generate new secret
+    secret = _mobile_access_totp_generate_secret()
+    issuer = "Claude Code Web"
+    account = socket.gethostname() or "local"
+    label = f"{issuer}:{account}"
+    provisioning_uri = (
+        f"otpauth://totp/{quote(label, safe='')}"
+        f"?{urlencode({'secret': secret, 'issuer': issuer, 'digits': 6, 'period': 30})}"
+    )
+
+    # Print setup instructions
+    print("=" * 60)
+    print("  TOTP Authenticator Setup")
+    print("=" * 60)
+    print()
+    print("1. Open your authenticator app (Google Authenticator, Authy, etc.)")
+    print("2. Scan the QR code below, or manually enter the secret")
+    print()
+
+    # Display QR code in terminal
+    try:
+        # Try to use qrcode library if available
+        import qrcode
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(provisioning_uri)
+        qr.make()
+        qr.print_ascii(invert=True)
+    except ImportError:
+        print("⚠️  qrcode library not installed. Install it for QR code display:")
+        print("   pip install qrcode")
+        print()
+        print("Or manually enter this secret in your authenticator app:")
+
+    print()
+    print(f"Account:  {account}")
+    print(f"Secret:   {secret}")
+    print(f"Issuer:   {issuer}")
+    print()
+
+    # Verify with user
+    print("3. Enter the 6-digit code from your authenticator to verify:")
+    for attempt in range(3):
+        code = input("   Code: ").strip()
+        if _mobile_access_totp_verify(code, secret):
+            # Save the configuration
+            _app_meta_set(_MOBILE_ACCESS_TOTP_SECRET_META_KEY, secret)
+            _app_meta_set(_MOBILE_ACCESS_TOTP_ENABLED_META_KEY, "1")
+            _app_meta_delete(_MOBILE_ACCESS_TOTP_PENDING_META_KEY)
+            _app_meta_delete(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY)
+            _mobile_access_clear_code()
+
+            print()
+            print("✓ TOTP Authenticator enabled successfully!")
+            print()
+            print("Remote mobile access now requires authenticator codes.")
+            print("Access codes have been disabled.")
+            return
+
+        remaining = 2 - attempt
+        if remaining > 0:
+            print(f"   ✗ Invalid code. {remaining} attempt(s) remaining.")
+        else:
+            print("   ✗ Invalid code. Setup failed.")
+
+    print()
+    print("Setup aborted. TOTP was not enabled.")
+    print("Run 'python server.py --setup-totp' to try again.")
+
+
+def _mobile_access_totp_verify(code: str, secret: str, *, consume: bool = False) -> bool:
+    normalized = re.sub(r"\D", "", code or "")
+    if len(normalized) != 6 or not secret:
+        return False
+    current = _mobile_access_totp_counter()
+    try:
+        last_counter = int(_app_meta_get(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY) or "-1")
+    except ValueError:
+        last_counter = -1
+    for candidate in (current - 1, current, current + 1):
+        if consume and candidate <= last_counter:
+            continue
+        try:
+            expected = _mobile_access_totp_code(secret, candidate)
+        except (ValueError, TypeError):
+            return False
+        if hmac.compare_digest(normalized, expected):
+            if consume:
+                _app_meta_set(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY, str(candidate))
+            return True
+    return False
+
+
+def _normalize_client_host(value: str) -> str:
+    raw = (value or "").strip().strip('"')
+    if raw.startswith("[") and "]" in raw:
+        return raw[1:raw.index("]")]
+    if raw.count(":") == 1:
+        host, port = raw.rsplit(":", 1)
+        if port.isdigit():
+            return host
+    return raw
 
 
 def _is_local_client_host(host: str) -> bool:
@@ -2029,9 +2228,27 @@ def _is_local_client_host(host: str) -> bool:
     if normalized in {"localhost", "127.0.0.1", "::1"}:
         return True
     try:
-        return ipaddress.ip_address(normalized).is_loopback
+        address = ipaddress.ip_address(normalized)
+        return any(address in network for network in _LOCAL_CLIENT_NETWORKS)
     except ValueError:
         return False
+
+
+def _request_client_host(request: Request) -> str:
+    direct = _normalize_client_host(request.client.host if request.client else "")
+    # Forwarded client headers are trusted only when the direct peer is already
+    # a local/private reverse proxy. Public clients cannot mark themselves local.
+    if not _is_local_client_host(direct):
+        return direct
+    forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    if forwarded_for:
+        return _normalize_client_host(forwarded_for)
+    forwarded = (request.headers.get("forwarded") or "").split(",", 1)[0]
+    for part in forwarded.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key.lower() == "for" and value:
+            return _normalize_client_host(value)
+    return direct
 
 
 def _is_local_request(request: Request) -> bool:
@@ -2229,6 +2446,8 @@ def _mobile_access_status_payload(request: Optional[Request] = None) -> dict:
         "code_ttl_seconds": _MOBILE_ACCESS_CODE_TTL_SECONDS,
         "default_session_ttl_seconds": _MOBILE_ACCESS_DEFAULT_SESSION_TTL_SECONDS,
         "max_session_ttl_seconds": _MOBILE_ACCESS_MAX_SESSION_TTL_SECONDS,
+        "totp_enabled": _mobile_access_totp_enabled(),
+        "auth_mode": "authenticator" if _mobile_access_totp_enabled() else "access_code",
         "sessions": _mobile_access_sessions(),
     }
     if request is not None:
@@ -2240,6 +2459,13 @@ def _mobile_access_clear_code() -> None:
     _app_meta_delete(_MOBILE_ACCESS_CODE_HASH_META_KEY)
     _app_meta_delete(_MOBILE_ACCESS_CODE_EXPIRES_META_KEY)
     _app_meta_delete(_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY)
+
+
+def _mobile_access_clear_totp() -> None:
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_SECRET_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_PENDING_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_ENABLED_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY)
 
 
 def _mobile_access_revoke_all() -> None:
@@ -2353,6 +2579,7 @@ def _mobile_access_auth_required(request: Request) -> bool:
 
 
 def _mobile_login_response(request: Request) -> Response:
+    authenticator_mode = _mobile_access_totp_enabled()
     html = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -2384,16 +2611,16 @@ button:disabled { opacity:.6; }
 <main class="box">
   <div class="logo">C</div>
   <h1>手机访问授权</h1>
-  <p>请输入电脑端设置页生成的 6 位访问码。授权到期后，这台设备会自动退出。</p>
+  <p>__AUTH_DESCRIPTION__</p>
   <form id="form">
-    <label for="code">访问码</label>
+    <label for="code">__AUTH_LABEL__</label>
     <input id="code" name="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" placeholder="000000" required />
     <label for="deviceLabel">设备名称</label>
     <input id="deviceLabel" name="deviceLabel" maxlength="40" placeholder="例如：我的 iPhone" />
     <button id="submit" type="submit">授权此设备</button>
     <div id="msg" class="msg"></div>
   </form>
-  <div class="hint">建议在同 WiFi 下使用电脑本机局域网 IP 访问；远程使用可选 ZeroTier 等私有网络工具。如果访问码已过期，请回到电脑端重新生成。</div>
+  <div class="hint">__AUTH_HINT__</div>
 </main>
 <script>
 const form = document.getElementById('form');
@@ -2426,6 +2653,14 @@ form.addEventListener('submit', async (e) => {
 </script>
 </body>
 </html>"""
+    if authenticator_mode:
+        html = html.replace("__AUTH_DESCRIPTION__", "请输入 Authenticator 应用当前显示的 6 位动态验证码。每个验证码约 30 秒更新一次。")
+        html = html.replace("__AUTH_LABEL__", "Authenticator 验证码")
+        html = html.replace("__AUTH_HINT__", "远程访问必须放在 HTTPS 反向代理或可信私有网络后，并保留登录限速；不要把未加密的本机服务直接裸露到公网。")
+    else:
+        html = html.replace("__AUTH_DESCRIPTION__", "请输入电脑端设置页生成的 6 位访问码。授权到期后，这台设备会自动退出。")
+        html = html.replace("__AUTH_LABEL__", "访问码")
+        html = html.replace("__AUTH_HINT__", "建议在同 WiFi 下使用电脑本机局域网 IP 访问；远程使用可选 ZeroTier 等私有网络工具。如果访问码已过期，请回到电脑端重新生成。")
     return Response(html, media_type="text/html")
 
 
@@ -3795,7 +4030,7 @@ def _mobile_safe_chat_request(request: Request, req: ChatRequest) -> ChatRequest
         _require_mobile_cwd_is_known(request, work_dir)
     else:
         work_dir = str(_DATA_DIR)
-    if req.permission_mode in {"acceptEdits", "bypassPermissions"} or req.allowed_tools:
+    if req.permission_mode in {"acceptEdits", "auto", "bypassPermissions"} or req.allowed_tools:
         raise HTTPException(status_code=403, detail="mobile access only supports safe chat permissions")
     return req.copy(update={
         "cwd": work_dir,
@@ -3852,7 +4087,7 @@ async def _chat_response(req: ChatRequest):
     # after the upload file is pruned. Only stored when it actually differs.
     if req.message != display_text:
         user_event["full_text"] = req.message
-    upsert_session(session_id, derive_title(display_text), work_dir)
+    upsert_session(session_id, derive_title(display_text), work_dir, req.workspace_mode)
     append_event(session_id, user_event)
     set_session_remote_state(session_id, remote_session_id, remote_ready and not is_new)
 
@@ -3872,7 +4107,7 @@ async def _chat_response(req: ChatRequest):
         )
         current_sig = _proc_sig(
             remote_session_id,
-            req.model, req.permission_mode, effective_system_prompt,
+            req.model, req.effort, req.permission_mode, effective_system_prompt,
             work_dir, req.allowed_tools, req.disallowed_tools,
         )
 
@@ -3906,6 +4141,7 @@ async def _chat_response(req: ChatRequest):
                     remote_session_id,
                     resume=not is_new,
                     model=req.model,
+                    effort=req.effort,
                     system_prompt=effective_system_prompt,
                     permission_mode=req.permission_mode,
                     allowed_tools=req.allowed_tools,
@@ -4464,6 +4700,7 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
                 session_id=job.session_id,
                 cwd=cwd,
                 model=req.model,
+                effort=req.effort,
                 system_prompt=req.system_prompt,
                 display_message=display,
                 permission_mode=req.permission_mode,
@@ -4581,7 +4818,7 @@ async def active_agent_loop(session_id: str = Query(default="")):
 @app.post("/api/agent-loop/start")
 async def start_agent_loop(request: Request, req: AgentLoopStartRequest):
     if _is_mobile_access_request(request):
-        if req.permission_mode in {"acceptEdits", "bypassPermissions"} or req.allowed_tools or (req.test_command or "").strip():
+        if req.permission_mode in {"acceptEdits", "auto", "bypassPermissions"} or req.allowed_tools or (req.test_command or "").strip():
             raise HTTPException(status_code=403, detail="mobile access can only start safe agent loops")
         if req.cwd:
             _require_mobile_cwd_is_known(request, req.cwd)
@@ -4698,6 +4935,8 @@ async def mobile_access_status(request: Request):
         return {
             "enabled": _mobile_access_enabled(),
             "authorized": bool(_mobile_access_validate_cookie(request)),
+            "totp_enabled": _mobile_access_totp_enabled(),
+            "auth_mode": "authenticator" if _mobile_access_totp_enabled() else "access_code",
             "local": False,
         }
     return {**_mobile_access_status_payload(request), "local": True}
@@ -4726,6 +4965,44 @@ async def mobile_access_code(request: Request, req: MobileAccessCodeRequest):
     return {**payload, "code": code}
 
 
+@app.post("/api/mobile-access/totp/setup")
+async def mobile_access_totp_setup(request: Request):
+    _require_local_admin(request)
+    secret = _mobile_access_totp_generate_secret()
+    _app_meta_set(_MOBILE_ACCESS_TOTP_PENDING_META_KEY, secret)
+    issuer = "Claude Code Web"
+    account = socket.gethostname() or "local"
+    label = f"{issuer}:{account}"
+    provisioning_uri = (
+        f"otpauth://totp/{quote(label, safe='')}"
+        f"?{urlencode({'secret': secret, 'issuer': issuer, 'digits': 6, 'period': 30})}"
+    )
+    return {"secret": secret, "provisioning_uri": provisioning_uri}
+
+
+@app.post("/api/mobile-access/totp/enable")
+async def mobile_access_totp_enable(request: Request, req: MobileAccessTotpVerifyRequest):
+    _require_local_admin(request)
+    secret = _app_meta_get(_MOBILE_ACCESS_TOTP_PENDING_META_KEY)
+    if not secret or not _mobile_access_totp_verify(req.code, secret):
+        raise HTTPException(status_code=400, detail="Authenticator 验证码不正确")
+    _app_meta_set(_MOBILE_ACCESS_TOTP_SECRET_META_KEY, secret)
+    _app_meta_set(_MOBILE_ACCESS_TOTP_ENABLED_META_KEY, "1")
+    _app_meta_set(_MOBILE_ACCESS_CODE_SESSION_TTL_META_KEY, str(_mobile_access_clamp_session_ttl(req.ttl_seconds) or 0))
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_PENDING_META_KEY)
+    _app_meta_delete(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY)
+    _mobile_access_clear_code()
+    return _mobile_access_status_payload(request)
+
+
+@app.delete("/api/mobile-access/totp")
+async def mobile_access_totp_disable(request: Request):
+    _require_local_admin(request)
+    _mobile_access_clear_totp()
+    _mobile_access_revoke_all()
+    return _mobile_access_status_payload(request)
+
+
 @app.post("/api/mobile-access/login")
 async def mobile_access_login(request: Request, req: MobileAccessLoginRequest):
     if not _mobile_access_enabled():
@@ -4733,16 +5010,27 @@ async def mobile_access_login(request: Request, req: MobileAccessLoginRequest):
     _mobile_access_check_rate_limit(request)
     code = re.sub(r"\D", "", req.code or "")
     code_active, code_expires_at, session_ttl = _mobile_access_code_info()
+    authenticator_mode = _mobile_access_totp_enabled()
     stored = _app_meta_get(_MOBILE_ACCESS_CODE_HASH_META_KEY)
-    if not code_active or not stored or not hmac.compare_digest(_hash_secret(code), stored):
+    if authenticator_mode:
+        valid = _mobile_access_totp_verify(
+            code,
+            _app_meta_get(_MOBILE_ACCESS_TOTP_SECRET_META_KEY),
+            consume=True,
+        )
+    else:
+        valid = bool(code_active and stored and hmac.compare_digest(_hash_secret(code), stored))
+    if not valid:
         _mobile_access_record_failure(request)
-        raise HTTPException(status_code=401, detail="invalid or expired access code")
-    _mobile_access_clear_code()
+        raise HTTPException(status_code=401, detail="invalid or expired verification code")
+    if not authenticator_mode:
+        _mobile_access_clear_code()
     _mobile_access_clear_failures(request)
     token, session = _mobile_access_issue_session(request, req.device_label or "", session_ttl)
     response = Response(
-        json.dumps({"ok": True, "session": session, "code_expires_at": code_expires_at}),
+        json.dumps({"ok": True, "session": session, "code_expires_at": code_expires_at, "auth_mode": "authenticator" if authenticator_mode else "access_code"}),
         media_type="application/json",
+        headers={"Cache-Control": "no-store"},
     )
     cookie_max_age = session_ttl if session_ttl is not None else 10 * 365 * 24 * 60 * 60
     response.set_cookie(
@@ -5482,6 +5770,7 @@ def _row_to_session(r: sqlite3.Row) -> dict:
         "pinned": bool(r["pinned"]),
         "archived": bool(r["archived"]),
         "tags": tags,
+        "workspace_mode": (r["workspace_mode"] or "chat") if "workspace_mode" in r.keys() else "chat",
     }
 
 
@@ -5490,7 +5779,7 @@ async def list_sessions(q: Optional[str] = None, archived: bool = False, tag: Op
     with db_connect() as conn:
         where = "archived = 1" if archived else "archived = 0"
         rows = conn.execute(
-            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, summary_cache FROM sessions "
+            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, summary_cache, workspace_mode FROM sessions "
             f"WHERE {where} ORDER BY pinned DESC, updated_at DESC LIMIT 500"
         ).fetchall()
 
@@ -5962,7 +6251,7 @@ async def prompt_optimizer_feedback(req: PromptOptimizerFeedbackRequest):
 async def get_session(session_id: str):
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags FROM sessions WHERE id = ?",
+            "SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, workspace_mode FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
     if row is None:
@@ -7488,10 +7777,10 @@ async def git_status(request: Request, cwd: str = Query(...)):
     _require_mobile_cwd_is_known(request, cwd)
     target = os.path.expanduser(cwd)
     if not os.path.isdir(target):
-        return {"branch": "", "dirty": 0, "available": False}
+        return {"branch": "", "dirty": 0, "available": False, "files": []}
     try:
         proc = await asyncio.create_subprocess_exec(
-            "git", "-C", target, "status", "--porcelain=v1", "--branch",
+            "git", "-C", target, "status", "--porcelain=v1", "--branch", "-z",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -7500,20 +7789,158 @@ async def git_status(request: Request, cwd: str = Query(...)):
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return {"branch": "", "dirty": 0, "available": False}
+            return {"branch": "", "dirty": 0, "available": False, "files": []}
     except Exception:
-        return {"branch": "", "dirty": 0, "available": False}
+        return {"branch": "", "dirty": 0, "available": False, "files": []}
     if proc.returncode != 0:
-        return {"branch": "", "dirty": 0, "available": False}
+        return {"branch": "", "dirty": 0, "available": False, "files": []}
     branch = ""
-    dirty = 0
-    for line in stdout.decode("utf-8", errors="replace").splitlines():
+    files: List[dict] = []
+    records = stdout.decode("utf-8", errors="replace").split("\0")
+    index = 0
+    while index < len(records):
+        line = records[index]
+        index += 1
+        if not line:
+            continue
         if line.startswith("##"):
             header = line[2:].strip()
             branch = header.split("...")[0].strip()
         else:
-            dirty += 1
-    return {"branch": branch, "dirty": dirty, "available": True}
+            status = line[:2].strip() or "?"
+            path = line[3:].strip()
+            if ("R" in status or "C" in status) and index < len(records):
+                index += 1  # porcelain -z stores the original path after the destination path
+            if path:
+                files.append({"path": path, "status": status})
+    return {"branch": branch, "dirty": len(files), "available": True, "files": files[:100]}
+
+
+@app.get("/api/git/diff")
+async def git_file_diff(request: Request, cwd: str = Query(...), path: str = Query(...)):
+    _require_mobile_cwd_is_known(request, cwd)
+    base = Path(os.path.expanduser(cwd)).resolve()
+    if not base.is_dir() or not path.strip():
+        raise HTTPException(status_code=400, detail="invalid repository or path")
+    relative = Path(path.strip())
+    if relative.is_absolute() or ".." in relative.parts:
+        raise HTTPException(status_code=400, detail="invalid file path")
+    try:
+        (base / relative).resolve().relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="file is outside repository")
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", str(base), "diff", "--no-ext-diff", "--unified=3", "--", str(relative),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=504, detail="git diff timed out")
+    if proc.returncode != 0:
+        raise HTTPException(status_code=400, detail=stderr.decode("utf-8", errors="replace")[:500] or "git diff failed")
+
+    diff_text = stdout.decode("utf-8", errors="replace")
+    if not diff_text and (base / relative).is_file():
+        check = await asyncio.create_subprocess_exec(
+            "git", "-C", str(base), "ls-files", "--others", "--exclude-standard", "--", str(relative),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        untracked, _ = await check.communicate()
+        if untracked.strip():
+            try:
+                content = (base / relative).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                content = ""
+            lines = content.splitlines()
+            diff_text = f"--- /dev/null\n+++ b/{relative}\n@@ -0,0 +1,{len(lines)} @@\n" + "\n".join(f"+{line}" for line in lines)
+
+    limit = 180_000
+    truncated = len(diff_text) > limit
+    if truncated:
+        diff_text = diff_text[:limit] + "\n\n… 差异过长，已截断"
+    return {"path": str(relative), "diff": diff_text or "该文件当前没有未提交的文本差异。", "truncated": truncated}
+
+
+async def _git_local_branches(target: str) -> List[str]:
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", target, "for-each-ref", "--format=%(refname:short)", "refs/heads",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=504, detail="git branch list timed out")
+    if proc.returncode != 0:
+        return []
+    return [
+        line.strip()
+        for line in stdout.decode("utf-8", errors="replace").splitlines()
+        if line.strip()
+    ]
+
+
+@app.get("/api/git/branches")
+async def git_branches(request: Request, cwd: str = Query(...)):
+    _require_mobile_cwd_is_known(request, cwd)
+    target = os.path.expanduser(cwd)
+    if not os.path.isdir(target):
+        return {"branches": [], "available": False}
+    status = await git_status(request, cwd)
+    if not status.get("available"):
+        return {"branches": [], "available": False}
+    try:
+        branches = await _git_local_branches(target)
+    except HTTPException:
+        raise
+    except Exception:
+        return {"branches": [], "available": False}
+    return {
+        "branches": branches,
+        "current": status.get("branch") or "",
+        "dirty": status.get("dirty") or 0,
+        "available": True,
+    }
+
+
+@app.post("/api/git/checkout")
+async def git_checkout(request: Request, payload: GitCheckoutRequest):
+    _require_not_mobile_access(request, "branch switching can only be managed from this computer")
+    cwd = (payload.cwd or "").strip()
+    branch = (payload.branch or "").strip()
+    if not cwd:
+        raise HTTPException(status_code=400, detail="cwd is required")
+    if not branch:
+        raise HTTPException(status_code=400, detail="branch is required")
+    target = os.path.expanduser(cwd)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=400, detail="invalid cwd")
+    branches = await _git_local_branches(target)
+    if branch not in branches:
+        raise HTTPException(status_code=400, detail="unknown local branch")
+    proc = await asyncio.create_subprocess_exec(
+        "git", "-C", target, "switch", branch,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise HTTPException(status_code=504, detail="git switch timed out")
+    if proc.returncode != 0:
+        detail = stderr.decode("utf-8", errors="replace").strip() or "git switch failed"
+        raise HTTPException(status_code=400, detail=detail)
+    return await git_status(request, cwd)
 
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
@@ -7863,6 +8290,7 @@ def main():
     parser.add_argument("--version", "-v", action="store_true", help="Show version")
     parser.add_argument("--extension-path", action="store_true", help="Print bundled Chrome extension directory and exit")
     parser.add_argument("--skip-cli-check", action="store_true", help="Skip claude CLI availability check on startup")
+    parser.add_argument("--setup-totp", action="store_true", help="Generate TOTP secret and display QR code in terminal")
     args = parser.parse_args()
 
     if args.version:
@@ -7875,6 +8303,10 @@ def main():
             print("Chrome extension files were not found in this installation.", file=sys.stderr)
             sys.exit(1)
         print(path)
+        return
+
+    if args.setup_totp:
+        _cli_setup_totp()
         return
 
     print(f"Claude Code Web v{__version__}")
