@@ -533,6 +533,16 @@ def init_db() -> None:
         ensure_column(conn, "sessions", "remote_session_id", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "sessions", "remote_ready", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "summary_cache", "TEXT")
+        ensure_column(conn, "sessions", "workspace_mode", "TEXT NOT NULL DEFAULT 'chat'")
+        conn.execute(
+            """
+            UPDATE sessions
+            SET workspace_mode = 'code'
+            WHERE COALESCE(workspace_mode, 'chat') IN ('', 'chat')
+              AND TRIM(cwd) NOT IN ('', '~', ?)
+            """,
+            (os.path.expanduser("~"),),
+        )
         ensure_column(conn, "prompts", "slash_trigger", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "session_usage", "duration_ms", "REAL NOT NULL DEFAULT 0")
         conn.execute(
@@ -679,24 +689,29 @@ def init_db() -> None:
 init_db()
 
 
-def upsert_session(session_id: str, title: str, cwd: str) -> None:
+def upsert_session(session_id: str, title: str, cwd: str, workspace_mode: Optional[str] = None) -> None:
     now = time.time()
+    normalized_mode = (workspace_mode or "").strip().lower()
+    project_bound = bool((cwd or "").strip() not in {"", "~", os.path.expanduser("~")})
+    requested_mode = "code" if normalized_mode == "code" or project_bound else ("chat" if normalized_mode == "chat" else "")
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT title, manual_title FROM sessions WHERE id = ?", (session_id,)
+            "SELECT title, manual_title, workspace_mode FROM sessions WHERE id = ?", (session_id,)
         ).fetchone()
         if row is None:
+            resolved_mode = requested_mode or "chat"
             conn.execute(
-                "INSERT INTO sessions (id, title, cwd, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, title, cwd, now, now),
+                "INSERT INTO sessions (id, title, cwd, workspace_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, title, cwd, resolved_mode, now, now),
             )
         else:
             new_title = row["title"]
             if not row["manual_title"] and not new_title:
                 new_title = title
+            resolved_mode = requested_mode or row["workspace_mode"] or "chat"
             conn.execute(
-                "UPDATE sessions SET title = ?, cwd = ?, updated_at = ? WHERE id = ?",
-                (new_title, cwd, now, session_id),
+                "UPDATE sessions SET title = ?, cwd = ?, workspace_mode = ?, updated_at = ? WHERE id = ?",
+                (new_title, cwd, resolved_mode, now, session_id),
             )
 
 
@@ -1066,6 +1081,7 @@ class ChatRequest(BaseModel):
     allowed_tools: Optional[List[str]] = None
     disallowed_tools: Optional[List[str]] = None
     force_new: Optional[bool] = None
+    workspace_mode: Optional[str] = None
     # UI-only metadata for attached docs (name/size/length/path); rendered as
     # badges on the user message. Not used to build the prompt — the doc text
     # is already embedded in `message` by the client.
@@ -3874,7 +3890,7 @@ async def _chat_response(req: ChatRequest):
     # after the upload file is pruned. Only stored when it actually differs.
     if req.message != display_text:
         user_event["full_text"] = req.message
-    upsert_session(session_id, derive_title(display_text), work_dir)
+    upsert_session(session_id, derive_title(display_text), work_dir, req.workspace_mode)
     append_event(session_id, user_event)
     set_session_remote_state(session_id, remote_session_id, remote_ready and not is_new)
 
@@ -5506,6 +5522,7 @@ def _row_to_session(r: sqlite3.Row) -> dict:
         "pinned": bool(r["pinned"]),
         "archived": bool(r["archived"]),
         "tags": tags,
+        "workspace_mode": (r["workspace_mode"] or "chat") if "workspace_mode" in r.keys() else "chat",
     }
 
 
@@ -5514,7 +5531,7 @@ async def list_sessions(q: Optional[str] = None, archived: bool = False, tag: Op
     with db_connect() as conn:
         where = "archived = 1" if archived else "archived = 0"
         rows = conn.execute(
-            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, summary_cache FROM sessions "
+            f"SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, summary_cache, workspace_mode FROM sessions "
             f"WHERE {where} ORDER BY pinned DESC, updated_at DESC LIMIT 500"
         ).fetchall()
 
@@ -5986,7 +6003,7 @@ async def prompt_optimizer_feedback(req: PromptOptimizerFeedbackRequest):
 async def get_session(session_id: str):
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags FROM sessions WHERE id = ?",
+            "SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, workspace_mode FROM sessions WHERE id = ?",
             (session_id,),
         ).fetchone()
     if row is None:
