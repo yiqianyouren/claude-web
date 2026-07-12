@@ -941,10 +941,15 @@
     color: #8f8983;
   }
   .thinking-block {
-    display: none;
+    width: 100%;
+    margin: 6px 0;
+    padding: 6px 10px;
+    border: 1px solid rgba(223, 216, 208, .66);
+    border-radius: 12px;
+    background: rgba(248, 246, 243, .42);
+    box-shadow: none;
   }
   .thinking-block[open] {
-    width: 100%;
     padding: 8px 12px;
     background: rgba(248, 246, 243, .66);
     box-shadow: none;
@@ -4255,9 +4260,6 @@
   body.code-mode .cw-more-tools {
     display: none !important;
   }
-  body.code-mode #webSearchBtn {
-    display: none !important;
-  }
   body.code-mode .cw-jump-bottom {
     display: none !important;
   }
@@ -4876,6 +4878,217 @@
   .cw-settings-submenu[data-settings-submenu="effort"] .cw-mode-option {
     min-height: 32px;
   }
+  .cw-workspace-context-picker {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    min-width: 0;
+    margin-left: 6px;
+  }
+  body:not(.code-mode) .cw-workspace-context-picker {
+    display: none !important;
+  }
+  .cw-workspace-context-trigger {
+    width: 30px !important;
+    min-width: 30px !important;
+    height: 30px !important;
+    padding: 0 !important;
+    gap: 0 !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #625b55 !important;
+  }
+  .cw-workspace-context-trigger:hover,
+  .cw-workspace-context-trigger.toolbar-btn-active,
+  .cw-workspace-context-trigger[aria-expanded="true"] {
+    background: #efebe7 !important;
+    color: #302c29 !important;
+  }
+  .cw-workspace-trigger-icon {
+    width: 17px !important;
+    height: 17px !important;
+  }
+  .cw-workspace-context-menu {
+    position: absolute;
+    left: 0;
+    bottom: calc(100% + 10px);
+    z-index: 95;
+    display: grid;
+    gap: 3px;
+    width: min(292px, calc(100vw - 32px));
+    padding: 6px;
+    border: 1px solid #dcd5ce;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 24px 58px rgba(38, 31, 26, .17), 0 4px 14px rgba(38, 31, 26, .06);
+  }
+  .cw-workspace-context-menu.hidden {
+    display: none !important;
+  }
+  .cw-workspace-context-item {
+    display: grid !important;
+    grid-template-columns: 24px minmax(0, 1fr) 14px;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 42px !important;
+    padding: 6px 9px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #37322e !important;
+    font-family: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .cw-workspace-context-item:hover,
+  .cw-workspace-context-item.toolbar-btn-active,
+  .cw-workspace-context-item[aria-expanded="true"] {
+    background: #f1eeeb !important;
+    color: #2f2a26 !important;
+  }
+  .cw-workspace-context-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #817970;
+  }
+  .cw-workspace-context-icon svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+  .cw-workspace-context-copy {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+  .cw-workspace-context-title {
+    color: #9a928a;
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1.1;
+  }
+  .cw-workspace-context-value {
+    overflow: hidden;
+    color: #3d3834;
+    font-size: 13px;
+    font-weight: 680;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cw-workspace-context-arrow,
+  .cw-workspace-context-caret {
+    justify-self: end;
+    color: #9b948c;
+  }
+  .cw-workspace-context-mode {
+    display: block !important;
+    width: 100%;
+  }
+  body.code-mode .cw-workspace-context-mode > #cwComposerPermBtn {
+    min-height: 42px !important;
+    padding: 6px 9px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    color: #37322e !important;
+    font-size: inherit !important;
+    font-weight: inherit !important;
+    gap: 10px !important;
+  }
+  body.code-mode .cw-workspace-context-mode > #cwComposerPermBtn:hover,
+  body.code-mode .cw-workspace-context-mode > #cwComposerPermBtn.toolbar-btn-active,
+  body.code-mode .cw-workspace-context-mode > #cwComposerPermBtn[aria-expanded="true"] {
+    border-color: transparent !important;
+    background: #f1eeeb !important;
+    color: #2f2a26 !important;
+  }
+  .cw-workspace-context-mode .cw-mode-menu {
+    left: calc(100% + 8px);
+    bottom: 0;
+    width: min(300px, calc(100vw - 32px));
+  }
+  @media (max-width: 760px) {
+    .cw-workspace-context-menu {
+      right: 0;
+      left: auto;
+      width: min(288px, calc(100vw - 22px));
+    }
+    .cw-workspace-context-mode .cw-mode-menu {
+      right: 0;
+      left: auto;
+      bottom: calc(100% + 8px);
+    }
+  }
+  body.code-mode.cw-empty .cw-workspace-context-picker {
+    margin-left: 0;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-trigger {
+    display: none !important;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-menu,
+  body.code-mode.cw-empty .cw-workspace-context-menu.hidden {
+    position: static;
+    display: inline-flex !important;
+    align-items: center;
+    gap: 14px;
+    width: auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-item {
+    display: inline-flex !important;
+    grid-template-columns: none;
+    width: auto;
+    min-height: 24px !important;
+    padding: 0 4px !important;
+    gap: 6px;
+    border-radius: 8px !important;
+    color: #77716b !important;
+    font-size: 12px !important;
+    font-weight: 520 !important;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-title,
+  body.code-mode.cw-empty .cw-workspace-context-arrow {
+    display: none !important;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-copy {
+    display: inline-flex;
+    gap: 0;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-value {
+    color: #77716b;
+    font-size: 12px;
+    font-weight: 650;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-icon svg {
+    width: 16px !important;
+    height: 16px !important;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-mode {
+    display: inline-flex !important;
+    width: auto;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-mode > #cwComposerPermBtn {
+    min-height: 26px !important;
+    padding: 0 7px 0 6px !important;
+    border: 1px solid #e1dbd5 !important;
+    border-radius: 10px !important;
+    background: #f7f5f3 !important;
+    font-size: 12px !important;
+    font-weight: 650 !important;
+  }
+  body.code-mode.cw-empty .cw-workspace-context-mode .cw-mode-menu {
+    position: absolute;
+    left: 0;
+    right: auto;
+    bottom: calc(100% + 10px);
+  }
   .cw-mode-option {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 16px;
@@ -5308,7 +5521,7 @@
       padding: 0 4px !important;
       font-size: 12px !important;
     }
-    body.code-mode.cw-empty .cw-composer-code-context .cw-composer-mode-picker > #cwComposerPermBtn {
+    body.code-mode.cw-empty .cw-composer-code-context .cw-composer-mode-picker:not(.cw-workspace-context-mode) > #cwComposerPermBtn {
       min-height: 26px !important;
       padding: 0 7px 0 6px !important;
       font-size: 12px !important;
@@ -5774,38 +5987,47 @@
               </div>
             </div>
             <span class="cw-composer-code-context" id="cwComposerCodeContext">
-              <button type="button" class="cw-context-chip" id="cwComposerProjectBtn" title="选择项目">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg>
-                <span id="cwComposerProjectName">claude-web</span>
-              </button>
-              <button type="button" class="cw-context-chip" id="cwComposerBranchBtn" title="选择分支">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a4 4 0 0 0 4 4h2"/><path d="M18 7v3a4 4 0 0 1-4 4h-2"/><path d="M12 14v3"/></svg>
-                <span id="cwComposerBranchName">main</span>
-              </button>
-              <span class="cw-mode-picker cw-composer-mode-picker">
-                <button type="button" class="cw-context-chip" id="cwComposerPermBtn" title="选择运行模式" aria-haspopup="menu" aria-expanded="false">
-                  <span id="cwComposerPermIcon" class="cw-mode-trigger-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-4 3v-3.2a3 3 0 0 1-2-2.8v-5a3 3 0 0 1 1-2.2"/><path d="M9 8h8a3 3 0 0 1 3 3v7l-3-2.2"/></svg></span>
-                  <span id="cwComposerPermLabel">默认模式</span>
-                  <svg class="cw-mode-trigger-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+              <span class="cw-workspace-context-picker">
+                <button type="button" id="cwComposerContextBtn" class="composer-btn cw-workspace-context-trigger" title="项目、分支和运行模式" aria-label="项目、分支和运行模式" aria-haspopup="menu" aria-expanded="false">
+                  <svg class="cw-workspace-trigger-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="12" cy="19" r="1.2"/></svg>
                 </button>
-                <span id="cwPermissionModeMenu" class="cw-mode-menu hidden" role="menu" aria-label="选择运行模式">
-                  <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="free" role="menuitemradio" aria-checked="false">
-                    <span class="cw-mode-option-copy"><span class="cw-mode-option-title">默认模式</span><span class="cw-mode-option-description">Claude 自动判断常规操作，安全命令直接执行</span></span>
-                    <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                <div id="cwComposerContextMenu" class="cw-workspace-context-menu hidden" role="menu" aria-label="项目、分支和运行模式">
+                  <button type="button" class="cw-workspace-context-item" id="cwComposerProjectBtn" role="menuitem" title="选择项目">
+                    <span class="cw-workspace-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v9A2.5 2.5 0 0 1 17.5 20h-11A2.5 2.5 0 0 1 4 17.5z"/></svg></span>
+                    <span class="cw-workspace-context-copy"><span class="cw-workspace-context-title">项目</span><span id="cwComposerProjectName" class="cw-workspace-context-value">claude-web</span></span>
+                    <span class="cw-workspace-context-arrow" aria-hidden="true">›</span>
                   </button>
-                  <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="plan" role="menuitemradio" aria-checked="false">
-                    <span class="cw-mode-option-copy"><span class="cw-mode-option-title">规划模式</span><span class="cw-mode-option-description">仅使用只读工具，生成计划供用户审批后执行</span></span>
-                    <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                  <button type="button" class="cw-workspace-context-item" id="cwComposerBranchBtn" role="menuitem" title="选择分支">
+                    <span class="cw-workspace-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a4 4 0 0 0 4 4h2"/><path d="M18 7v3a4 4 0 0 1-4 4h-2"/><path d="M12 14v3"/></svg></span>
+                    <span class="cw-workspace-context-copy"><span class="cw-workspace-context-title">分支</span><span id="cwComposerBranchName" class="cw-workspace-context-value">main</span></span>
+                    <span class="cw-workspace-context-arrow" aria-hidden="true">›</span>
                   </button>
-                  <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="acceptEdits" role="menuitemradio" aria-checked="false">
-                    <span class="cw-mode-option-copy"><span class="cw-mode-option-title">代理模式</span><span class="cw-mode-option-description">自动接受文件创建 / 编辑，减少确认步骤</span></span>
-                    <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
-                  </button>
-                  <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="bypassPermissions" role="menuitemradio" aria-checked="false">
-                    <span class="cw-mode-option-copy"><span class="cw-mode-option-title">自动模式</span><span class="cw-mode-option-description">完全自动化，绕过所有权限检查【谨慎使用】</span></span>
-                    <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
-                  </button>
-                </span>
+                  <span class="cw-mode-picker cw-composer-mode-picker cw-workspace-context-mode">
+                    <button type="button" class="cw-workspace-context-item" id="cwComposerPermBtn" title="选择运行模式" aria-haspopup="menu" aria-expanded="false">
+                      <span id="cwComposerPermIcon" class="cw-workspace-context-icon cw-mode-trigger-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-4 3v-3.2a3 3 0 0 1-2-2.8v-5a3 3 0 0 1 1-2.2"/><path d="M9 8h8a3 3 0 0 1 3 3v7l-3-2.2"/></svg></span>
+                      <span class="cw-workspace-context-copy"><span class="cw-workspace-context-title">运行模式</span><span id="cwComposerPermLabel" class="cw-workspace-context-value">默认模式</span></span>
+                      <svg class="cw-mode-trigger-caret cw-workspace-context-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>
+                    </button>
+                    <span id="cwPermissionModeMenu" class="cw-mode-menu hidden" role="menu" aria-label="选择运行模式">
+                      <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="free" role="menuitemradio" aria-checked="false">
+                        <span class="cw-mode-option-copy"><span class="cw-mode-option-title">默认模式</span><span class="cw-mode-option-description">Claude 自动判断常规操作，安全命令直接执行</span></span>
+                        <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                      </button>
+                      <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="plan" role="menuitemradio" aria-checked="false">
+                        <span class="cw-mode-option-copy"><span class="cw-mode-option-title">规划模式</span><span class="cw-mode-option-description">仅使用只读工具，生成计划供用户审批后执行</span></span>
+                        <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                      </button>
+                      <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="acceptEdits" role="menuitemradio" aria-checked="false">
+                        <span class="cw-mode-option-copy"><span class="cw-mode-option-title">代理模式</span><span class="cw-mode-option-description">自动接受文件创建 / 编辑，减少确认步骤</span></span>
+                        <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                      </button>
+                      <button type="button" class="cw-mode-option cw-mode-option-compact" data-permission-mode="bypassPermissions" role="menuitemradio" aria-checked="false">
+                        <span class="cw-mode-option-copy"><span class="cw-mode-option-title">自动模式</span><span class="cw-mode-option-description">完全自动化，绕过所有权限检查【谨慎使用】</span></span>
+                        <svg class="cw-mode-option-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>
+                      </button>
+                    </span>
+                  </span>
+                </div>
               </span>
               <span class="cw-mode-picker cw-composer-settings-picker">
                 <button type="button" class="cw-context-chip" id="cwComposerSettingsBtn" title="模型和推理强度" aria-haspopup="menu" aria-expanded="false">
@@ -6028,6 +6250,7 @@
             <div>
               <label class="settings-label">默认展开</label>
               <div class="settings-inline">
+                <label class="settings-check"><input type="checkbox" id="thinkingOpen" /> 思考过程</label>
                 <label class="settings-check"><input type="checkbox" id="toolUseOpen" /> 工具调用</label>
                 <label class="settings-check"><input type="checkbox" id="toolResultOpen" /> 工具结果</label>
               </div>
@@ -6043,6 +6266,13 @@
           <div class="settings-section">
             <label class="settings-label">URL 上下文</label>
             <label class="settings-check"><input type="checkbox" id="urlAutoFetch" /> 自动识别 URL，发送时抓取网页内容作为上下文</label>
+          </div>
+          <div class="settings-section">
+            <label class="settings-label">Code 工作区</label>
+            <div class="settings-inline">
+              <label class="settings-check"><input type="checkbox" id="codeWebSearchDefault" /> 默认开启 Web 工具</label>
+            </div>
+            <div class="settings-hint">控制 Code 模式里的 WebSearch / WebFetch；关闭后仍可通过 Bash 使用 curl、npm、pip 等命令。</div>
           </div>
         </section>
 
@@ -6797,12 +7027,14 @@ window.fetch = async (...args) => {
 const settings = {
   theme: LS.get('theme', 'light'),
   systemPrompt: LS.get('systemPrompt', ''),
+  thinkingOpen: LS.get('thinkingOpen', false),
   toolUseOpen: LS.get('toolUseOpen', false),
   toolResultOpen: LS.get('toolResultOpen', false),
   notifyEnabled: LS.get('notifyEnabled', false),
   soundEnabled: LS.get('soundEnabled', false),
   urlAutoFetch: LS.get('urlAutoFetch', true),
-  webSearch: LS.get('webSearch', false),
+  chatWebSearch: LS.get('chatWebSearch', LS.get('webSearch', false)),
+  codeWebSearch: LS.get('codeWebSearch', false),
 };
 
 let sessionId = null;
@@ -6831,6 +7063,7 @@ const streamingMessages = {}; // msgId -> { container, blocks: { [index]: {type,
 const streamedIds = new Set();
 let lastStreamingMsgId = null;
 let mobileAccessStatus = { local: true, authorized: false, enabled: false };
+let runtimeStatus = { root_or_sudo: false };
 let mobileQuestionMode = false;
 let savedCwdOptions = [];
 const MOBILE_BANNER_DISMISSED_KEY = 'mobileQuestionBannerDismissed';
@@ -6885,6 +7118,8 @@ const cwComposerPermIcon = $('cwComposerPermIcon');
 const cwComposerProjectBtn = $('cwComposerProjectBtn');
 const cwComposerBranchBtn = $('cwComposerBranchBtn');
 const cwComposerPermBtn = $('cwComposerPermBtn');
+const cwComposerContextBtn = $('cwComposerContextBtn');
+const cwComposerContextMenu = $('cwComposerContextMenu');
 const cwPermissionModeMenu = $('cwPermissionModeMenu');
 const cwProjectManagerPanel = $('cwProjectManagerPanel');
 const cwProjectManagerClose = $('cwProjectManagerClose');
@@ -6966,6 +7201,7 @@ const PERMISSION_MODE_LABELS = Object.freeze({
 });
 const PERMISSION_MODE_VALUES = Object.freeze(Object.keys(PERMISSION_MODE_LABELS));
 const MOBILE_UNSAFE_PERMISSION_MODES = Object.freeze(['acceptEdits', 'bypassPermissions']);
+const ROOT_UNSAFE_PERMISSION_MODES = Object.freeze(['bypassPermissions']);
 const mobileModeBanner = $('mobileModeBanner');
 const dismissMobileBannerBtn = $('dismissMobileBanner');
 const toolsModal = $('toolsModal');
@@ -6987,9 +7223,10 @@ const cliImportSelectAll = $('cliImportSelectAll');
 const cliImportCancel = $('cliImportCancel');
 const cliImportSubmit = $('cliImportSubmit');
 const systemPromptInput = $('systemPromptInput');
-const toolUseOpenEl = $('toolUseOpen'), toolResultOpenEl = $('toolResultOpen');
+const thinkingOpenEl = $('thinkingOpen'), toolUseOpenEl = $('toolUseOpen'), toolResultOpenEl = $('toolResultOpen');
 const notifyEnabledEl = $('notifyEnabled'), soundEnabledEl = $('soundEnabled');
 const urlAutoFetchEl = $('urlAutoFetch');
+const codeWebSearchDefaultEl = $('codeWebSearchDefault');
 const notificationMasterEnabled = $('notificationMasterEnabled');
 const notificationChannelsEl = $('notificationChannels');
 const notificationSearch = $('notificationSearch');
@@ -8950,7 +9187,17 @@ function thinkingSummaryHtml(label) {
 }
 
 function addThinkingBlock(container, text) {
-  return null;
+  if (!container || !String(text || '').trim()) return null;
+  hideThinking(container);
+  const block = document.createElement('details');
+  block.className = 'thinking-block';
+  block.dataset.role = 'thinking-block';
+  block.open = !!settings.thinkingOpen;
+  block.innerHTML = thinkingSummaryHtml('思考过程') +
+    `<div class="thinking-body">${escapeHtml(text || '')}</div>`;
+  container.appendChild(block);
+  scrollBottom();
+  return block;
 }
 
 function addSystemInfo(text) {
@@ -9882,8 +10129,9 @@ function handleStreamEvent(ev, container) {
       }
       reconcileStreamingArtifacts(state, ev.index, previewEntries);
       postProcessRendered(el);
-    } else if (block.type === 'thinking' && block.el) {
-      block.el.remove();
+    } else if (block.type === 'thinking') {
+      if (block.el) block.el.remove();
+      if (block.text) addThinkingBlock(state.container, block.text);
     } else if (block.type === 'tool_use') {
       if (block.name === 'TodoWrite') return container;
       const inputData = parseStreamToolInput(block);
@@ -10733,13 +10981,22 @@ async function insertPickerSelection(i) {
 function buildPermissionPayload() {
   const mode = permSelect.value;
   const out = { permission_mode: null, allowed_tools: null, disallowed_tools: null };
+  const applyWebToolPolicy = () => {
+    if (isWebSearchEnabled()) return out;
+    const webTools = new Set(['WebSearch', 'WebFetch']);
+    if (Array.isArray(out.allowed_tools)) {
+      out.allowed_tools = out.allowed_tools.filter(name => !webTools.has(name));
+    } else {
+      out.disallowed_tools = normalizeToolNames([...(out.disallowed_tools || []), ...webTools]);
+    }
+    return out;
+  };
   if (mobileQuestionMode) {
     if (mode === 'readonly') out.disallowed_tools = ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
     else if (mode === 'plan') out.permission_mode = 'plan';
-    return out;
+    return applyWebToolPolicy();
   }
   if (mode === 'plan') out.permission_mode = 'plan';
-  else if (codeMode && mode === 'free') out.permission_mode = 'auto';
   else if (mode === 'acceptEdits') out.permission_mode = 'acceptEdits';
   else if (mode === 'bypassPermissions') out.permission_mode = 'bypassPermissions';
   else if (mode === 'readonly') out.disallowed_tools = ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit'];
@@ -10752,12 +11009,12 @@ function buildPermissionPayload() {
     out.permission_mode = 'bypassPermissions';
     out.allowed_tools = null;
     out.disallowed_tools = null;
-    return out;
+    return applyWebToolPolicy();
   }
   if (override.extraAllowedTools.length > 0) {
     out.allowed_tools = normalizeToolNames([...(out.allowed_tools || []), ...override.extraAllowedTools]);
   }
-  return out;
+  return applyWebToolPolicy();
 }
 
 function mobileCwdOrStop() {
@@ -10971,8 +11228,15 @@ async function runAgentLoop() {
       }),
     });
     if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(text || ('HTTP ' + resp.status));
+      let message = 'HTTP ' + resp.status;
+      try {
+        const data = await resp.clone().json();
+        message = data?.detail || message;
+      } catch {
+        const text = await resp.text();
+        if (text) message = text;
+      }
+      throw new Error(message);
     }
     const data = await resp.json();
     agentLoopJobId = data.job_id;
@@ -11214,7 +11478,12 @@ async function sendCore(message, displayMessage, imagePaths, options = {}) {
     });
     if (!resp.ok || !resp.body) {
       hideThinking(container);
-      addErrorBlock('请求失败: ' + resp.status);
+      let message = '请求失败: ' + resp.status;
+      try {
+        const data = await resp.clone().json();
+        if (data?.detail) message = data.detail;
+      } catch {}
+      addErrorBlock(message);
       return { ok: false, status: resp.status, text: collectedAssistantText.trim(), usage: lastResultEvent?.usage || null };
     }
 
@@ -12227,6 +12496,24 @@ async function refreshExtensionStatus() {
   }
 }
 
+async function refreshRuntimeStatus() {
+  try {
+    const r = await fetch('/api/runtime');
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || r.status);
+    runtimeStatus = { root_or_sudo: !!data.root_or_sudo };
+    if (isRootUnsafePermissionMode(permSelect?.value)) {
+      setPermissionMode('free');
+      toast('root/sudo 环境不支持自动模式，已切回默认模式', { timeout: 4200 });
+    } else {
+      renderPermissionModeMenu();
+    }
+  } catch {
+    runtimeStatus = { root_or_sudo: false };
+    renderPermissionModeMenu();
+  }
+}
+
 async function generateExtensionToken() {
   if (!generateExtensionTokenBtn) return;
   generateExtensionTokenBtn.disabled = true;
@@ -12938,11 +13225,13 @@ if (settingsModal) {
 
 settingsBtn.addEventListener('click', () => {
   systemPromptInput.value = settings.systemPrompt || '';
+  thinkingOpenEl.checked = settings.thinkingOpen;
   toolUseOpenEl.checked = settings.toolUseOpen;
   toolResultOpenEl.checked = settings.toolResultOpen;
   notifyEnabledEl.checked = settings.notifyEnabled;
   soundEnabledEl.checked = settings.soundEnabled;
   urlAutoFetchEl.checked = settings.urlAutoFetch;
+  if (codeWebSearchDefaultEl) codeWebSearchDefaultEl.checked = settings.codeWebSearch;
   refreshExtensionStatus();
   refreshMobileAccess();
   refreshNotificationSettings();
@@ -13072,6 +13361,7 @@ if (cliImportSelectAll) cliImportSelectAll.addEventListener('click', () => {
 if (cliImportSubmit) cliImportSubmit.addEventListener('click', () => importSelectedCliSessions());
 
 systemPromptInput.addEventListener('change', () => { settings.systemPrompt = systemPromptInput.value; LS.set('systemPrompt', settings.systemPrompt); });
+thinkingOpenEl.addEventListener('change', () => { settings.thinkingOpen = thinkingOpenEl.checked; LS.set('thinkingOpen', settings.thinkingOpen); });
 toolUseOpenEl.addEventListener('change', () => { settings.toolUseOpen = toolUseOpenEl.checked; LS.set('toolUseOpen', settings.toolUseOpen); });
 toolResultOpenEl.addEventListener('change', () => { settings.toolResultOpen = toolResultOpenEl.checked; LS.set('toolResultOpen', settings.toolResultOpen); });
 notifyEnabledEl.addEventListener('change', () => {
@@ -13085,6 +13375,12 @@ urlAutoFetchEl.addEventListener('change', () => {
   LS.set('urlAutoFetch', settings.urlAutoFetch);
   if (!settings.urlAutoFetch) clearUrlContext();
   else scheduleUrlDetect();
+});
+if (codeWebSearchDefaultEl) codeWebSearchDefaultEl.addEventListener('change', () => {
+  settings.codeWebSearch = codeWebSearchDefaultEl.checked;
+  LS.set('codeWebSearch', settings.codeWebSearch);
+  applyWebSearchBtnState();
+  toast(settings.codeWebSearch ? 'Code Web 工具默认开启' : 'Code Web 工具默认关闭');
 });
 
 async function refreshMemories() {
@@ -13247,9 +13543,34 @@ function closeComposerSettingsMenu() {
   composerSettingsBtn.setAttribute('aria-expanded', 'false');
 }
 
+function setComposerContextMenuOpen(open, options = {}) {
+  if (!cwComposerContextMenu || !cwComposerContextBtn) return;
+  const nextOpen = !!open;
+  cwComposerContextMenu.classList.toggle('hidden', !nextOpen);
+  cwComposerContextBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+  cwComposerContextBtn.classList.toggle('toolbar-btn-active', nextOpen);
+  if (!nextOpen) {
+    setPermissionModeMenuOpen(false);
+    return;
+  }
+  setMoreToolsOpen(false);
+  closeComposerSettingsMenu();
+  cwProjectManagerPanel?.classList.add('hidden');
+  headerMoreBtn?.classList.remove('toolbar-btn-active');
+  cwBranchPanel?.classList.add('hidden');
+  cwComposerBranchBtn?.classList.remove('toolbar-btn-active');
+  if (options.focusFirst) {
+    requestAnimationFrame(() => {
+      cwComposerContextMenu.querySelector('[role="menuitem"], button')?.focus();
+    });
+  }
+}
+
 if (composerSettingsBtn && settingsMenu) {
   composerSettingsBtn.addEventListener('click', (e) => {
     e.stopPropagation();
+    setComposerContextMenuOpen(false);
+    setPermissionModeMenuOpen(false);
     const open = !settingsMenu.classList.contains('hidden');
     settingsMenu.classList.toggle('hidden', open);
     composerSettingsBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
@@ -13319,23 +13640,45 @@ function permissionModeIconSvg(value) {
   return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5h10a3 3 0 0 1 3 3v5a3 3 0 0 1-3 3H9l-4 3v-3.2a3 3 0 0 1-2-2.8v-5a3 3 0 0 1 1-2.2"/><path d="M9 8h8a3 3 0 0 1 3 3v7l-3-2.2"/></svg>';
 }
 
+function isRootUnsafePermissionMode(mode) {
+  return !!runtimeStatus.root_or_sudo && ROOT_UNSAFE_PERMISSION_MODES.includes(normalizePermissionMode(mode));
+}
+
+function rootUnsafePermissionMessage() {
+  return '当前服务以 root/sudo 权限运行，Claude CLI 不允许使用自动模式；请使用代理模式，或用普通用户运行服务。';
+}
+
 function renderPermissionModeMenu() {
   if (!cwPermissionModeMenu) return;
   const current = normalizePermissionMode(permSelect?.value);
   if (cwComposerPermIcon) cwComposerPermIcon.innerHTML = permissionModeIconSvg(current);
+  if (permSelect) {
+    [...permSelect.options].forEach(opt => {
+      const mode = normalizePermissionMode(opt.value);
+      const rootDisabled = isRootUnsafePermissionMode(mode);
+      opt.disabled = rootDisabled;
+      opt.title = rootDisabled ? rootUnsafePermissionMessage() : '';
+    });
+  }
   cwPermissionModeMenu.querySelectorAll('[data-permission-mode]').forEach(btn => {
     const mode = normalizePermissionMode(btn.dataset.permissionMode);
     const active = mode === current;
     const mobileDisabled = mobileQuestionMode && MOBILE_UNSAFE_PERMISSION_MODES.includes(mode);
+    const rootDisabled = isRootUnsafePermissionMode(mode);
     btn.classList.toggle('active', active);
     btn.setAttribute('aria-checked', active ? 'true' : 'false');
-    btn.disabled = mobileDisabled;
-    btn.title = mobileDisabled ? '手机问答模式下不可使用此模式' : '';
+    btn.disabled = mobileDisabled || rootDisabled;
+    btn.title = rootDisabled ? rootUnsafePermissionMessage() : (mobileDisabled ? '手机问答模式下不可使用此模式' : '');
   });
 }
 
 function setPermissionMode(value) {
   const mode = normalizePermissionMode(value);
+  if (isRootUnsafePermissionMode(mode)) {
+    toast(rootUnsafePermissionMessage(), { timeout: 5200 });
+    renderPermissionModeMenu();
+    return false;
+  }
   if (mobileQuestionMode && MOBILE_UNSAFE_PERMISSION_MODES.includes(mode)) {
     toast('手机问答模式不能切换高权限');
     renderPermissionModeMenu();
@@ -14516,23 +14859,38 @@ async function fetchFollowupSuggestions() {
 
 // ===== web search toggle =====
 function isWebSearchEnabled() {
-  return codeMode || settings.webSearch;
+  return codeMode ? !!settings.codeWebSearch : !!settings.chatWebSearch;
+}
+
+function setWebSearchEnabled(enabled) {
+  if (codeMode) {
+    settings.codeWebSearch = !!enabled;
+    LS.set('codeWebSearch', settings.codeWebSearch);
+    if (codeWebSearchDefaultEl) codeWebSearchDefaultEl.checked = settings.codeWebSearch;
+  } else {
+    settings.chatWebSearch = !!enabled;
+    LS.set('chatWebSearch', settings.chatWebSearch);
+    LS.set('webSearch', settings.chatWebSearch);
+  }
+  applyWebSearchBtnState();
 }
 
 function applyWebSearchBtnState() {
   const enabled = isWebSearchEnabled();
   webSearchBtn.classList.toggle('toolbar-btn-active', enabled);
   webSearchBtn.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-  webSearchBtn.title = codeMode
-    ? '代码工作区已自动开启联网搜索'
-    : (settings.webSearch
-      ? '联网搜索已开启：Claude 会优先用 WebSearch / WebFetch 联网查询。点击关闭'
-      : '联网搜索：开启后 Claude 会优先用 WebSearch / WebFetch 获取最新信息');
+  if (codeMode) {
+    webSearchBtn.title = enabled
+      ? 'Code Web 工具已开启：Claude 可使用 WebSearch / WebFetch。点击关闭'
+      : 'Code Web 工具已关闭：禁用 WebSearch / WebFetch；不影响 Bash 里的 curl、npm、pip';
+  } else {
+    webSearchBtn.title = enabled
+      ? '联网搜索已开启：Claude 可使用 WebSearch / WebFetch。点击关闭'
+      : '联网搜索已关闭：不会使用 WebSearch / WebFetch';
+  }
 }
 webSearchBtn.addEventListener('click', () => {
-  settings.webSearch = !settings.webSearch;
-  LS.set('webSearch', settings.webSearch);
-  applyWebSearchBtnState();
+  setWebSearchEnabled(!isWebSearchEnabled());
 });
 applyWebSearchBtnState();
 
@@ -14645,6 +15003,7 @@ function setProjectManagerOpen(open, focus = 'project') {
   cwProjectManagerPanel.classList.toggle('hidden', !open);
   headerMoreBtn?.classList.toggle('toolbar-btn-active', !!open);
   if (!open) return;
+  setComposerContextMenuOpen(false);
   setPermissionModeMenuOpen(false);
   cwBranchPanel?.classList.add('hidden');
   cwComposerBranchBtn?.classList.remove('toolbar-btn-active');
@@ -14710,6 +15069,7 @@ function setBranchPanelOpen(open) {
   cwBranchPanel.classList.toggle('hidden', !open);
   cwComposerBranchBtn?.classList.toggle('toolbar-btn-active', !!open);
   if (!open) return;
+  setComposerContextMenuOpen(false);
   setPermissionModeMenuOpen(false);
   setProjectManagerOpen(false);
   renderBranchPanel();
@@ -14819,6 +15179,11 @@ function updateWorkspaceLabels() {
   [cwWorkspaceProjectName, cwHeaderProjectName, cwComposerProjectName].forEach(el => setText(el, project));
   [cwWorkspaceBranch, cwHeaderBranchName, cwComposerBranchName].forEach(el => setText(el, branch));
   [cwWorkspacePermLabel, cwComposerPermLabel].forEach(el => setText(el, permission));
+  if (cwComposerContextBtn) {
+    const title = `项目：${project} · 分支：${branch} · ${permission}`;
+    cwComposerContextBtn.title = title;
+    cwComposerContextBtn.setAttribute('aria-label', title);
+  }
 }
 
 function sidebarSectionLabel() {
@@ -15051,7 +15416,11 @@ headerMoreBtn.addEventListener('click', () => {
 
 function setMoreToolsOpen(open) {
   if (!composerMoreToolsMenu || !composerMoreToolsBtn) return;
-  if (open) setPermissionModeMenuOpen(false);
+  if (open) {
+    setPermissionModeMenuOpen(false);
+    setComposerContextMenuOpen(false);
+    closeComposerSettingsMenu();
+  }
   composerMoreToolsMenu.classList.toggle('hidden', !open);
   composerMoreToolsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
 }
@@ -15159,6 +15528,27 @@ cwWorkspacePermBtn?.addEventListener('click', () => {
   setProjectManagerOpen(true, 'permission');
 });
 
+cwComposerContextBtn?.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  setCodeMode(true);
+  setComposerContextMenuOpen(cwComposerContextMenu?.classList.contains('hidden'));
+});
+
+cwComposerContextBtn?.addEventListener('keydown', (e) => {
+  if (!['ArrowDown', 'Enter', ' '].includes(e.key)) return;
+  e.preventDefault();
+  setCodeMode(true);
+  setComposerContextMenuOpen(true, { focusFirst: true });
+});
+
+cwComposerContextMenu?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  setComposerContextMenuOpen(false);
+  cwComposerContextBtn?.focus();
+});
+
 cwComposerProjectBtn?.addEventListener('click', () => {
   setCodeMode(true);
   setProjectManagerOpen(true, 'project');
@@ -15230,7 +15620,7 @@ cwBranchPanelClose?.addEventListener('click', () => setBranchPanelOpen(false));
 document.addEventListener('click', (e) => {
   if (!cwProjectManagerPanel || cwProjectManagerPanel.classList.contains('hidden')) return;
   if (e.target.closest('#cwProjectManagerPanel')) return;
-  if (e.target.closest('#headerMoreBtn') || e.target.closest('#cwComposerProjectBtn') || e.target.closest('#cwComposerBranchBtn') || e.target.closest('#cwComposerPermBtn')) return;
+  if (e.target.closest('#headerMoreBtn') || e.target.closest('#cwComposerContextBtn') || e.target.closest('#cwComposerContextMenu') || e.target.closest('#cwComposerProjectBtn') || e.target.closest('#cwComposerBranchBtn') || e.target.closest('#cwComposerPermBtn')) return;
   if (e.target.closest('#cwWorkspaceProjectBtn') || e.target.closest('#cwWorkspacePermBtn')) return;
   setProjectManagerOpen(false);
 });
@@ -15238,7 +15628,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('click', (e) => {
   if (!cwBranchPanel || cwBranchPanel.classList.contains('hidden')) return;
   if (e.target.closest('#cwBranchPanel')) return;
-  if (e.target.closest('#cwComposerBranchBtn')) return;
+  if (e.target.closest('#cwComposerContextBtn') || e.target.closest('#cwComposerContextMenu') || e.target.closest('#cwComposerBranchBtn')) return;
   setBranchPanelOpen(false);
 });
 
@@ -15248,10 +15638,23 @@ document.addEventListener('click', (e) => {
   setPermissionModeMenuOpen(false);
 });
 
+document.addEventListener('click', (e) => {
+  if (!cwComposerContextMenu || cwComposerContextMenu.classList.contains('hidden')) return;
+  if (e.target.closest('#cwComposerContextBtn') || e.target.closest('#cwComposerContextMenu')) return;
+  setComposerContextMenuOpen(false);
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || cwPermissionModeMenu?.classList.contains('hidden')) return;
   setPermissionModeMenuOpen(false);
   cwComposerPermBtn?.focus();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || cwComposerContextMenu?.classList.contains('hidden')) return;
+  if (cwPermissionModeMenu && !cwPermissionModeMenu.classList.contains('hidden')) return;
+  setComposerContextMenuOpen(false);
+  cwComposerContextBtn?.focus();
 });
 
 cwWorkspaceTaskBtn?.addEventListener('click', () => {
@@ -16050,6 +16453,7 @@ refreshMemories();
 refreshStats();
 refreshTags();
 refreshGitStatus();
+refreshRuntimeStatus();
 applyExtensionDraftFromUrl();
 setInterval(refreshSessions, 30000);
 setInterval(refreshStats, 60000);

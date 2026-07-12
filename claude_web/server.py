@@ -1312,6 +1312,35 @@ def _proc_sig(
     )
 
 
+_ROOT_UNSAFE_PERMISSION_MODES = {"auto", "bypassPermissions"}
+
+
+def _running_with_root_or_sudo_privileges() -> bool:
+    try:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            return True
+    except Exception:
+        pass
+    return bool(os.environ.get("SUDO_UID") or os.environ.get("SUDO_USER"))
+
+
+def _root_unsafe_permission_requested(permission_mode: Optional[str]) -> bool:
+    mode = (permission_mode or "").strip()
+    return mode in _ROOT_UNSAFE_PERMISSION_MODES and _running_with_root_or_sudo_privileges()
+
+
+def _root_auto_mode_error_message() -> str:
+    return (
+        "当前服务以 root/sudo 权限运行，Claude CLI 不允许使用自动模式"
+        "（--dangerously-skip-permissions）。请切换为「代理模式」，或用普通用户运行服务后再使用自动模式。"
+    )
+
+
+def _ensure_cli_permission_mode_supported(permission_mode: Optional[str]) -> None:
+    if _root_unsafe_permission_requested(permission_mode):
+        raise HTTPException(status_code=400, detail=_root_auto_mode_error_message())
+
+
 def build_persistent_args(
     session_id: str,
     resume: bool,
@@ -1332,6 +1361,7 @@ def build_persistent_args(
         args += ["--model", model]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
+    permission_mode = (permission_mode or "").strip()
     if permission_mode and permission_mode in ("default", "acceptEdits", "auto", "bypassPermissions", "plan"):
         args += ["--permission-mode", permission_mode]
     if allowed_tools:
@@ -1370,6 +1400,7 @@ def build_args(
         args += ["--model", model]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
+    permission_mode = (permission_mode or "").strip()
     if permission_mode and permission_mode in ("default", "acceptEdits", "auto", "bypassPermissions", "plan"):
         args += ["--permission-mode", permission_mode]
     if allowed_tools:
@@ -3986,6 +4017,7 @@ async def _chat_response(req: ChatRequest):
     work_dir = req.cwd or (row["cwd"] if row and row["cwd"] else os.path.expanduser("~"))
     full_message = req.message
     display_text = req.display_message if req.display_message is not None else req.message
+    _ensure_cli_permission_mode_supported(req.permission_mode)
 
     checkpoint = await create_git_checkpoint(work_dir)
 
@@ -4744,6 +4776,7 @@ async def start_agent_loop(request: Request, req: AgentLoopStartRequest):
     if not goal:
         raise HTTPException(status_code=400, detail="goal required")
     _normalize_agent_loop_test_command(req.test_command or "")
+    _ensure_cli_permission_mode_supported(req.permission_mode)
     session_id = (req.session_id or "").strip() or str(uuid.uuid4())
     if session_id in _compacting_sessions:
         raise HTTPException(status_code=409, detail="session is compacting")
@@ -8113,6 +8146,11 @@ async def fetch_url(req: FetchUrlRequest):
 @app.get("/api/version")
 async def get_version():
     return {"version": __version__}
+
+
+@app.get("/api/runtime")
+async def runtime_status():
+    return {"root_or_sudo": _running_with_root_or_sudo_privileges()}
 
 
 @app.get("/api/update-check")
