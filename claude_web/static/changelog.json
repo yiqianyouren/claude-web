@@ -2,6 +2,16 @@
   "$schema": "https://json.schemastore.org/changelog.json",
   "releases": [
     {
+      "version": "2.0.1",
+      "date": "2026-07-12",
+      "highlights": [
+        { "type": "fix", "text": "Code 模式新增独立联网开关：关闭地球时禁用 WebSearch / WebFetch，但仍可通过 Bash 使用 curl 等本地命令" },
+        { "type": "fix", "text": "优化 root / sudo 环境下的自动模式提示，不再静默降级权限模式，避免远程 NAS 或虚拟环境部署时行为不清晰" },
+        { "type": "fix", "text": "局域网访问识别扩展到 RFC1918 私网、loopback 和链路本地地址，同网段手机 / 电脑访问本机服务不再误要求访问码" },
+        { "type": "fix", "text": "继续打磨 Code 工作区 UI：输入区上下文按钮、模型切换、思考折叠、工具结果、移动端布局和浏览器插件样式统一优化" }
+      ]
+    },
+    {
       "version": "2.0.0",
       "date": "2026-06-24",
       "highlights": [
