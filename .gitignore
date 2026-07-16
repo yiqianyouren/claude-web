@@ -16,6 +16,7 @@ env/
 dist/
 build/
 *.whl
+node_modules/
 
 # Runtime data (user-specific, contains PII)
 history/

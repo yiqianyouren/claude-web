@@ -34,6 +34,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from claude_web import __version__
+from claude_web.agent_sdk_bridge import AgentSdkBridge, AgentSdkBridgeError, AgentSdkTurn
+from claude_web.agent_sdk_manager import (
+    AgentSdkInstallError,
+    activate_staging,
+    discard_backup,
+    install_pinned,
+    install_root as agent_sdk_install_root,
+    rollback_activation,
+    status_payload as agent_sdk_status_payload,
+)
 
 _log = logging.getLogger("claude_web")
 
@@ -49,6 +59,9 @@ EXTENSION_DIR_CANDIDATES = (
 HISTORY_DIR = _DATA_DIR / "history"
 UPLOADS_DIR = _DATA_DIR / "uploads"
 DB_PATH = _DATA_DIR / "claude-web.db"
+CHECKPOINT_DIR = Path(
+    os.environ.get("CLAUDE_WEB_CHECKPOINT_DIR", str(Path.home() / ".claude-web" / "checkpoints"))
+).expanduser().resolve()
 
 _EXTENSION_TOKEN_META_KEY = "extension_token_hash_v1"
 _EXTENSION_TOKEN_CREATED_META_KEY = "extension_token_created_at_v1"
@@ -70,15 +83,7 @@ _LOCAL_CLIENT_NETWORKS = tuple(
     ipaddress.ip_network(value)
     for value in (
         "127.0.0.0/8",
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "100.64.0.0/10",
-        "169.254.0.0/16",
-        "198.18.0.0/15",
         "::1/128",
-        "fc00::/7",
-        "fe80::/10",
     )
 )
 _mobile_login_failures: Dict[str, List[float]] = {}
@@ -98,6 +103,7 @@ _NOTIFICATION_MAX_REDIRECTS = 5
 
 HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_MB = 20
@@ -109,6 +115,10 @@ KNOWN_TOOL_NAMES = {
 _CODE_WORKSPACE_ALLOWED_TOOLS = sorted(KNOWN_TOOL_NAMES)
 
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
+_claude_agent_bridge = AgentSdkBridge()
+_agent_sdk_running_sessions: Set[str] = set()
+_agent_sdk_detached_turn_tasks: Dict[str, asyncio.Task] = {}
+_agent_sdk_install_lock = asyncio.Lock()
 _stopped_sessions: Set[str] = set()
 # Processes we terminated on purpose (duplicate-request replacement or stop).
 # Keyed by the process object itself, not session_id, so that a session whose
@@ -325,6 +335,36 @@ async def _discard_warm_session(session_id: str) -> None:
         await _terminate_process(entry.process)
 
 
+def _session_runtime_busy(session_id: str) -> bool:
+    return session_id in _running_processes or session_id in _agent_sdk_running_sessions
+
+
+def _session_agent_loop_busy(session_id: str) -> bool:
+    return any(
+        job.session_id == session_id and job.status == "running"
+        for job in _agent_loop_jobs.values()
+    )
+
+
+def _session_control_busy(session_id: str) -> bool:
+    return (
+        _session_runtime_busy(session_id)
+        or _session_agent_loop_busy(session_id)
+        or session_id in _compacting_sessions
+    )
+
+
+async def _discard_session_runtime(session_id: str) -> None:
+    """Detach both legacy CLI and native SDK runtimes for a local session."""
+    await _discard_warm_session(session_id)
+    if not _claude_agent_bridge.running:
+        return
+    try:
+        await _claude_agent_bridge.close_session(session_id)
+    except Exception as exc:
+        _log.debug("Agent SDK session %s was already closed: %s", session_id, exc)
+
+
 async def _park_warm_session(session_id: str, entry: _WarmEntry) -> None:
     previous = _warm_processes.get(session_id)
     _warm_processes[session_id] = entry
@@ -384,9 +424,17 @@ async def _lifespan(app: FastAPI):
     # Prune stale uploads in a background thread so startup isn't blocked on disk IO.
     asyncio.get_event_loop().run_in_executor(None, _prune_old_uploads)
     reaper_task = asyncio.create_task(_warm_reaper())
+    bridge_start_task = asyncio.create_task(_claude_agent_bridge.ensure_started())
     try:
         yield
     finally:
+        if not bridge_start_task.done():
+            bridge_start_task.cancel()
+            try:
+                await bridge_start_task
+            except asyncio.CancelledError:
+                pass
+        await _claude_agent_bridge.shutdown()
         reaper_task.cancel()
         try:
             await reaper_task
@@ -555,6 +603,11 @@ def init_db() -> None:
         ensure_column(conn, "sessions", "remote_ready", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "sessions", "summary_cache", "TEXT")
         ensure_column(conn, "sessions", "workspace_mode", "TEXT NOT NULL DEFAULT 'chat'")
+        ensure_column(conn, "sessions", "runtime_origin", "TEXT NOT NULL DEFAULT ''")
+        # Number of native plain-user messages that precede the first local
+        # user_input event. Native forks intentionally keep Claude's earlier
+        # transcript without copying those bubbles into the new Web session.
+        ensure_column(conn, "sessions", "native_user_offset", "INTEGER NOT NULL DEFAULT 0")
         conn.execute(
             """
             UPDATE sessions
@@ -563,6 +616,19 @@ def init_db() -> None:
               AND TRIM(cwd) NOT IN ('', '~', ?)
             """,
             (os.path.expanduser("~"),),
+        )
+        # Sessions that already had a live remote Code conversation before the
+        # ownership column existed were created by the legacy CLI path.  Pin
+        # them once instead of silently resuming them through a different
+        # runtime after an upgrade.
+        conn.execute(
+            """
+            UPDATE sessions
+            SET runtime_origin = 'claude_cli'
+            WHERE workspace_mode = 'code'
+              AND remote_ready = 1
+              AND COALESCE(runtime_origin, '') = ''
+            """
         )
         ensure_column(conn, "prompts", "slash_trigger", "TEXT NOT NULL DEFAULT ''")
         ensure_column(conn, "session_usage", "duration_ms", "REAL NOT NULL DEFAULT 0")
@@ -1109,6 +1175,36 @@ class ChatRequest(BaseModel):
     docs: Optional[List[dict]] = None
 
 
+class NativeCompactRequest(BaseModel):
+    model: Optional[str] = None
+    effort: Optional[str] = None
+    permission_mode: Optional[str] = None
+    allowed_tools: Optional[List[str]] = None
+    disallowed_tools: Optional[List[str]] = None
+
+
+class PermissionDecisionRequest(BaseModel):
+    allow: bool
+    always_allow: Optional[bool] = False
+    updated_input: Optional[dict] = None
+    message: Optional[str] = ""
+    interrupt: Optional[bool] = False
+
+
+class NativeModelControlRequest(BaseModel):
+    model: Optional[str] = None
+
+
+class NativePermissionControlRequest(BaseModel):
+    permission_mode: str
+
+
+class NativeRewindRequest(NativeCompactRequest):
+    user_message_id: Optional[str] = None
+    event_index: Optional[int] = None
+    dry_run: Optional[bool] = False
+
+
 class GitCheckoutRequest(BaseModel):
     cwd: str
     branch: str
@@ -1119,6 +1215,7 @@ class AgentLoopStartRequest(BaseModel):
     session_id: Optional[str] = None
     cwd: Optional[str] = None
     model: Optional[str] = None
+    effort: Optional[str] = None
     system_prompt: Optional[str] = None
     permission_mode: Optional[str] = None
     allowed_tools: Optional[List[str]] = None
@@ -1290,6 +1387,7 @@ class NotificationTestRequest(BaseModel):
 def _proc_sig(
     remote_session_id: str,
     model: Optional[str],
+    effort: Optional[str],
     permission_mode: Optional[str],
     system_prompt: Optional[str],
     cwd: str,
@@ -1306,6 +1404,7 @@ def _proc_sig(
     return (
         remote_session_id or "",
         model or "",
+        _normalize_effort(effort) or "",
         permission_mode or "default",
         (system_prompt or "").strip(),
         str(Path(cwd).resolve()),
@@ -1314,8 +1413,13 @@ def _proc_sig(
     )
 
 
+def _normalize_effort(effort: Optional[str]) -> Optional[str]:
+    value = (effort or "").strip().lower()
+    return value if value in {"low", "medium", "high", "xhigh", "max"} else None
+
+
 _ROOT_UNSAFE_PERMISSION_MODES = {"auto", "bypassPermissions"}
-_CODE_WORKSPACE_DEFAULT_PERMISSION_MODE = "acceptEdits"
+_CODE_WORKSPACE_DEFAULT_PERMISSION_MODE = "bypassPermissions"
 
 
 def _running_with_root_or_sudo_privileges() -> bool:
@@ -1339,10 +1443,13 @@ def _effective_permission_mode_for_workspace(
     mode = (permission_mode or "").strip()
     if mode == "free":
         mode = ""
-    if (workspace_mode or "").strip().lower() == "code" and _root_unsafe_permission_requested(mode):
-        return "acceptEdits"
-    if (workspace_mode or "").strip().lower() == "code" and not mode:
-        return _CODE_WORKSPACE_DEFAULT_PERMISSION_MODE
+    if (workspace_mode or "").strip().lower() == "code":
+        if not mode:
+            mode = _CODE_WORKSPACE_DEFAULT_PERMISSION_MODE
+        # Claude CLI rejects --dangerously-skip-permissions under root. Keep
+        # Code mode fully automatic there via acceptEdits + the full allowlist.
+        if _root_unsafe_permission_requested(mode):
+            return "acceptEdits"
     return mode or None
 
 
@@ -1399,8 +1506,9 @@ def build_persistent_args(
         args += ["--allowed-tools", ",".join(allowed_tools)]
     if disallowed_tools:
         args += ["--disallowed-tools", ",".join(disallowed_tools)]
-    if effort:
-        args += ["--effort", effort]
+    normalized_effort = _normalize_effort(effort)
+    if normalized_effort:
+        args += ["--effort", normalized_effort]
     return args
 
 
@@ -1434,8 +1542,9 @@ def build_args(
         args += ["--model", model]
     if system_prompt:
         args += ["--append-system-prompt", system_prompt]
-    if effort:
-        args += ["--effort", effort]
+    normalized_effort = _normalize_effort(effort)
+    if normalized_effort:
+        args += ["--effort", normalized_effort]
     permission_mode = (permission_mode or "").strip()
     if permission_mode and permission_mode in ("default", "acceptEdits", "auto", "bypassPermissions", "plan"):
         args += ["--permission-mode", permission_mode]
@@ -1785,6 +1894,123 @@ async def git_changed_files_since(cwd: str, before: Optional[Dict[str, dict]]) -
     return changed
 
 
+def _safe_checkpoint_relative_path(raw_path: str) -> Optional[Path]:
+    path = Path(raw_path)
+    if not raw_path or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        return None
+    return path
+
+
+async def _git_untracked_paths(cwd: str) -> Optional[List[str]]:
+    raw = await _git_run_raw(cwd, "ls-files", "--others", "--exclude-standard", "-z")
+    if raw is None:
+        return None
+    paths: List[str] = []
+    for value in raw.split("\0"):
+        if not value:
+            continue
+        if _safe_checkpoint_relative_path(value) is None:
+            return None
+        paths.append(value)
+    return sorted(set(paths))
+
+
+def _copy_untracked_checkpoint(cwd: str, backup_root: Path, paths: List[str]) -> None:
+    root = Path(cwd)
+    payload_root = backup_root / "untracked"
+    payload_root.mkdir(parents=True, exist_ok=True)
+    for raw_path in paths:
+        relative = _safe_checkpoint_relative_path(raw_path)
+        if relative is None:
+            raise ValueError(f"unsafe checkpoint path: {raw_path}")
+        source = root / relative
+        target = payload_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            target.symlink_to(os.readlink(source))
+        elif source.is_file():
+            shutil.copy2(source, target, follow_symlinks=False)
+        else:
+            raise FileNotFoundError(f"untracked checkpoint source disappeared: {source}")
+    (backup_root / "manifest.json").write_text(
+        json.dumps({"version": 2, "untracked": paths}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _restore_untracked_checkpoint(cwd: str, backup_root: Path, paths: List[str]) -> None:
+    root = Path(cwd)
+    payload_root = backup_root / "untracked"
+    for raw_path in paths:
+        relative = _safe_checkpoint_relative_path(raw_path)
+        if relative is None:
+            raise ValueError(f"unsafe checkpoint path: {raw_path}")
+        source = payload_root / relative
+        target = root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+        elif target.exists():
+            shutil.rmtree(target)
+        if source.is_symlink():
+            target.symlink_to(os.readlink(source))
+        elif source.is_file():
+            shutil.copy2(source, target, follow_symlinks=False)
+        else:
+            raise FileNotFoundError(f"checkpoint payload missing: {source}")
+
+
+def _checkpoint_payload_complete(backup_root: Path, paths: List[str]) -> bool:
+    if not (backup_root / "manifest.json").is_file():
+        return False
+    payload_root = backup_root / "untracked"
+    return all(
+        (payload_root / relative).is_file() or (payload_root / relative).is_symlink()
+        for raw_path in paths
+        for relative in [_safe_checkpoint_relative_path(raw_path)]
+        if relative is not None
+    ) and all(_safe_checkpoint_relative_path(raw_path) is not None for raw_path in paths)
+
+
+async def discard_git_checkpoint(cp: Optional[dict], cwd: str = "") -> None:
+    if not cp or cp.get("type") != "git-v2":
+        return
+    checkpoint_id = str(cp.get("id") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", checkpoint_id):
+        ref = str(cp.get("ref") or f"refs/claude-web/checkpoints/{checkpoint_id}/stash")
+        if cwd and re.fullmatch(r"refs/claude-web/checkpoints/[0-9a-f]{32}/stash", ref):
+            await _git_run(cwd, "update-ref", "-d", ref)
+        shutil.rmtree(CHECKPOINT_DIR / checkpoint_id, ignore_errors=True)
+
+
+async def discard_event_checkpoints(events: List[dict], cwd: str = "") -> None:
+    for event in events:
+        if isinstance(event, dict) and event.get("checkpoint"):
+            await discard_git_checkpoint(event.get("checkpoint"), cwd)
+
+
+def _remove_untracked_paths(cwd: str, paths: List[str]) -> None:
+    root = Path(cwd)
+    parents: Set[Path] = set()
+    for raw_path in paths:
+        relative = _safe_checkpoint_relative_path(raw_path)
+        if relative is None:
+            raise ValueError(f"unsafe checkpoint path: {raw_path}")
+        target = root / relative
+        if target.is_symlink() or target.is_file():
+            target.unlink(missing_ok=True)
+        elif target.is_dir():
+            shutil.rmtree(target)
+        parents.update(target.parents)
+    for parent in sorted(parents, key=lambda item: len(item.parts), reverse=True):
+        if parent == root or root not in parent.parents:
+            continue
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
+
+
 async def create_git_checkpoint(cwd: str) -> Optional[dict]:
     if not cwd or not os.path.isdir(cwd):
         return None
@@ -1794,23 +2020,112 @@ async def create_git_checkpoint(cwd: str) -> Optional[dict]:
     head = await _git_run(cwd, "rev-parse", "HEAD")
     if head is None:
         return None
-    stash = await _git_run(cwd, "stash", "create", f"claude-web-checkpoint-{int(time.time())}")
-    return {"type": "git", "head": head, "stash": stash or ""}
+    checkpoint_id = uuid.uuid4().hex
+    stash = await _git_run(cwd, "stash", "create", f"claude-web-checkpoint-{checkpoint_id}")
+    ref = f"refs/claude-web/checkpoints/{checkpoint_id}/stash"
+    if stash and await _git_run(cwd, "update-ref", ref, stash) is None:
+        return None
+    untracked = await _git_untracked_paths(cwd)
+    if untracked is None:
+        if stash:
+            await _git_run(cwd, "update-ref", "-d", ref)
+        return None
+    backup_root = CHECKPOINT_DIR / checkpoint_id
+    try:
+        await asyncio.to_thread(_copy_untracked_checkpoint, cwd, backup_root, untracked)
+    except Exception as exc:
+        _log.warning("Unable to snapshot untracked files for checkpoint %s: %s", checkpoint_id, exc)
+        shutil.rmtree(backup_root, ignore_errors=True)
+        if stash:
+            await _git_run(cwd, "update-ref", "-d", ref)
+        return None
+    return {
+        "type": "git-v2",
+        "id": checkpoint_id,
+        "head": head,
+        "stash": stash or "",
+        "ref": ref if stash else "",
+        "untracked": untracked,
+    }
 
 
-async def restore_git_checkpoint(cwd: str, cp: dict) -> bool:
-    if not cp or cp.get("type") != "git" or not cwd:
+async def _apply_git_checkpoint(cwd: str, cp: dict) -> bool:
+    if not cp or cp.get("type") not in {"git", "git-v2"} or not cwd:
         return False
     head = cp.get("head")
     stash = cp.get("stash") or ""
     if not head:
         return False
+    if await _git_run(cwd, "cat-file", "-e", f"{head}^{{commit}}") is None:
+        return False
+    if stash and await _git_run(cwd, "cat-file", "-e", f"{stash}^{{commit}}") is None:
+        return False
+    checkpoint_id = ""
+    before_untracked: List[str] = []
+    backup_root: Optional[Path] = None
+    if cp.get("type") == "git-v2":
+        checkpoint_id = str(cp.get("id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", checkpoint_id):
+            return False
+        before_untracked = sorted(set(str(item) for item in (cp.get("untracked") or [])))
+        backup_root = CHECKPOINT_DIR / checkpoint_id
+        if not await asyncio.to_thread(_checkpoint_payload_complete, backup_root, before_untracked):
+            return False
     if await _git_run(cwd, "reset", "--hard", head) is None:
         return False
-    await _git_run(cwd, "clean", "-fd")
+    if cp.get("type") == "git-v2":
+        current_untracked = await _git_untracked_paths(cwd)
+        if current_untracked is None:
+            return False
+        created_after_checkpoint = sorted(set(current_untracked) - set(before_untracked))
+        try:
+            await asyncio.to_thread(_remove_untracked_paths, cwd, created_after_checkpoint)
+        except Exception as exc:
+            _log.warning("Unable to remove files created after checkpoint: %s", exc)
+            return False
     if stash:
-        await _git_run(cwd, "stash", "apply", stash)
+        if await _git_run(cwd, "stash", "apply", "--index", stash) is None:
+            return False
+    if cp.get("type") == "git-v2":
+        try:
+            await asyncio.to_thread(
+                _restore_untracked_checkpoint,
+                cwd,
+                backup_root,
+                before_untracked,
+            )
+        except Exception as exc:
+            _log.warning("Unable to restore checkpoint untracked files: %s", exc)
+            return False
     return True
+
+
+async def restore_git_checkpoint(cwd: str, cp: dict) -> bool:
+    """Restore a checkpoint transactionally.
+
+    A second checkpoint protects the state that exists when the user clicks
+    rollback. If reset/apply/untracked restoration fails at any point, that
+    safety checkpoint is applied immediately so a failed rollback does not
+    itself lose work.
+    """
+    if not cp or cp.get("type") not in {"git", "git-v2"} or not cwd:
+        return False
+    safety = await create_git_checkpoint(cwd)
+    if safety is None:
+        return False
+    restored = await _apply_git_checkpoint(cwd, cp)
+    if restored:
+        await discard_git_checkpoint(safety, cwd)
+        return True
+    rolled_back = await _apply_git_checkpoint(cwd, safety)
+    if rolled_back:
+        await discard_git_checkpoint(safety, cwd)
+    else:
+        _log.error(
+            "Checkpoint restore failed and safety rollback also failed; preserved recovery checkpoint %s",
+            safety.get("id"),
+        )
+    return False
 
 
 def format_context_snippet(events: List[dict], max_chars: int = 6000) -> str:
@@ -1842,6 +2157,172 @@ def format_context_snippet(events: List[dict], max_chars: int = 6000) -> str:
             lines.append("...（历史已截断）")
             break
     return "\n\n".join(lines)
+
+
+def _clip_context_text(text: str, max_chars: int) -> str:
+    """Keep the original goal plus the most recent work when a context view is large."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    head_chars = max(400, int(max_chars * 0.35))
+    tail_chars = max(400, max_chars - head_chars - 48)
+    return (
+        cleaned[:head_chars].rstrip()
+        + "\n\n...（中间过程已省略，仅保留开头目标与最近进展）...\n\n"
+        + cleaned[-tail_chars:].lstrip()
+    )
+
+
+def _tool_result_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+        return "\n".join(part for part in parts if part)
+    if content is None:
+        return ""
+    try:
+        return json.dumps(content, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(content)
+
+
+def _light_context_tool_summary(name: str, input_data: object) -> str:
+    data = input_data if isinstance(input_data, dict) else {}
+    tool_name = str(name or "工具")
+    path = str(data.get("file_path") or data.get("notebook_path") or data.get("path") or "").strip()
+    if tool_name == "Read":
+        offset = data.get("offset")
+        limit = data.get("limit")
+        line_hint = ""
+        if isinstance(offset, int) and isinstance(limit, int):
+            line_hint = f" L{offset + 1}-L{offset + limit}"
+        elif isinstance(offset, int):
+            line_hint = f" 从 L{offset + 1}"
+        return f"读取 {path or '文件'}{line_hint}"
+    if tool_name in {"Write", "Edit", "MultiEdit", "NotebookEdit"}:
+        return f"{tool_name} {path or '文件'}"
+    if tool_name == "Bash":
+        command = re.sub(r"\s+", " ", str(data.get("command") or "")).strip()
+        return f"执行命令 {command[:260]}" if command else "执行命令"
+    if tool_name in {"Grep", "Glob"}:
+        pattern = str(data.get("pattern") or "").strip()
+        suffix = " · ".join(part for part in (pattern, path) if part)
+        return f"{tool_name} {suffix}".strip()
+    if tool_name in {"WebSearch", "WebFetch"}:
+        target = str(data.get("query") or data.get("url") or "").strip()
+        return f"{tool_name} {target[:260]}".strip()
+    if tool_name == "Task":
+        description = str(data.get("description") or data.get("prompt") or "").strip()
+        return f"子任务 {description[:260]}".strip()
+    for key in ("description", "query", "command", "path", "file_path"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            compact_value = re.sub(r"\s+", " ", value).strip()[:260]
+            return f"{tool_name} {compact_value}"
+    return tool_name
+
+
+def format_light_context_snippet(events: List[dict], max_chars: int = 16000) -> str:
+    """Build the legacy Chat/CLI compaction record.
+
+    Native Code sessions never consume this filtered text; their context and
+    compaction remain entirely inside Claude Agent SDK.
+    """
+    records: List[str] = []
+    tools: Dict[str, dict] = {}
+    for ev in events:
+        event_type = ev.get("type")
+        if event_type == "user_input":
+            text = (ev.get("text") or "").strip()
+            if text:
+                records.append(f"用户要求：{text[:2400]}")
+            attachment_paths = [
+                str(item.get("path") or "").strip()
+                for item in (ev.get("docs") or [])
+                if isinstance(item, dict) and str(item.get("path") or "").strip()
+            ]
+            attachment_paths.extend(str(path).strip() for path in (ev.get("images") or []) if str(path).strip())
+            if attachment_paths:
+                records.append("本轮附件：" + "；".join(attachment_paths[:20]))
+            continue
+        if event_type == "assistant":
+            content = (ev.get("message") or {}).get("content") or []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = (block.get("text") or "").strip()
+                    if text:
+                        records.append(f"助手结论：{text[:1400]}")
+                elif block_type == "tool_use":
+                    tool_id = str(block.get("id") or "")
+                    name = str(block.get("name") or "工具")
+                    summary = _light_context_tool_summary(name, block.get("input"))
+                    if tool_id:
+                        tools[tool_id] = {"name": name, "summary": summary}
+                    records.append(f"工具：{summary}")
+            continue
+        if event_type == "user":
+            content = (ev.get("message") or {}).get("content") or []
+            for block in content:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_id = str(block.get("tool_use_id") or "")
+                tool = tools.get(tool_id) or {}
+                name = str(tool.get("name") or "工具")
+                text = re.sub(r"\n{3,}", "\n\n", _tool_result_text(block.get("content"))).strip()
+                if block.get("is_error"):
+                    records.append(f"工具错误（{name}）：{text[:700] or '未提供错误详情'}")
+                elif name in {"Read", "Grep", "Glob", "Bash", "WebFetch", "WebSearch"} and text:
+                    records.append(f"必要结果片段（{name}）：{text[:520]}")
+                else:
+                    records.append(f"工具完成：{tool.get('summary') or name}")
+            continue
+        if event_type == "result":
+            changed = ev.get("changed_files") or []
+            if isinstance(changed, list) and changed:
+                files = []
+                for item in changed[:40]:
+                    if not isinstance(item, dict):
+                        continue
+                    status = str(item.get("status") or "M")
+                    path = str(item.get("path") or "").strip()
+                    if path:
+                        files.append(f"{status} {path}")
+                if files:
+                    records.append("修改摘要：" + "；".join(files))
+    return _clip_context_text("\n\n".join(records), max_chars)
+
+
+def build_compacted_resume_context(events: List[dict], max_chars: int = 24000) -> str:
+    """Bootstrap only a legacy locally compacted CLI/Chat session."""
+    compacted_index = -1
+    for idx in range(len(events) - 1, -1, -1):
+        event = events[idx]
+        if event.get("type") == "user_input" and event.get("compacted") is True:
+            compacted_index = idx
+            break
+    if compacted_index < 0:
+        return ""
+    summary = str(events[compacted_index].get("text") or "").strip()
+    recent = format_light_context_snippet(events[compacted_index + 1 :], max_chars=max_chars // 2)
+    body = (
+        "【Code 轻上下文恢复】\n"
+        "以下内容是旧会话的精简工作记忆。保留最近的用户要求与必要结论；"
+        "工具过程、文件读取和修改仅保留摘要。不要重复回应这些历史内容，也不要补写未保留的思考过程。\n\n"
+        f"【历史摘要】\n{summary}"
+    )
+    if recent:
+        body += f"\n\n【最近轮次的必要记录】\n{recent}"
+    body += "\n\n【请继续处理下面的新要求】\n"
+    return _clip_context_text(body, max_chars)
 
 
 def derive_title(message: str) -> str:
@@ -2410,6 +2891,65 @@ def _mobile_access_totp_code(secret: str, counter: int) -> str:
     offset = digest[-1] & 0x0F
     value = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
     return f"{value % 1_000_000:06d}"
+
+
+def _cli_setup_totp() -> None:
+    """Configure Authenticator access from the canonical package CLI."""
+    import sys
+
+    if _mobile_access_totp_enabled():
+        print("⚠️  TOTP Authenticator is already enabled.", file=sys.stderr)
+        print()
+        response = input("Disable current TOTP and generate new secret? (yes/no): ").strip().lower()
+        if response not in ("yes", "y"):
+            print("Aborted.")
+            return
+        _mobile_access_clear_totp()
+        print("✓ Cleared existing TOTP configuration.\n")
+
+    totp_seed = _mobile_access_totp_generate_secret()
+    issuer = "Claude Code Web"
+    account = socket.gethostname() or "local"
+    label = f"{issuer}:{account}"
+    provisioning_uri = (
+        f"otpauth://totp/{quote(label, safe='')}"
+        f"?{urlencode({'secret': totp_seed, 'issuer': issuer, 'digits': 6, 'period': 30})}"
+    )
+    print("=" * 60)
+    print("  TOTP Authenticator Setup")
+    print("=" * 60)
+    print("\n1. Open your authenticator app (Google Authenticator, Authy, etc.)")
+    print("2. Scan the QR code below, or manually enter the secret\n")
+    try:
+        import qrcode
+
+        qr = qrcode.QRCode(border=1)
+        qr.add_data(provisioning_uri)
+        qr.make()
+        qr.print_ascii(invert=True)
+    except ImportError:
+        print("⚠️  qrcode is not installed. Run `pip install qrcode` to display a QR code.")
+        print("You can still enter the secret manually.")
+    print(f"\nAccount:  {account}")
+    print(f"Secret:   {totp_seed}")
+    print(f"Issuer:   {issuer}\n")
+    print("3. Enter the 6-digit code from your authenticator to verify:")
+    for attempt in range(3):
+        code = input("   Code: ").strip()
+        if _mobile_access_totp_verify(code, totp_seed):
+            _app_meta_set(_MOBILE_ACCESS_TOTP_SECRET_META_KEY, totp_seed)
+            _app_meta_set(_MOBILE_ACCESS_TOTP_ENABLED_META_KEY, "1")
+            _app_meta_delete(_MOBILE_ACCESS_TOTP_PENDING_META_KEY)
+            _app_meta_delete(_MOBILE_ACCESS_TOTP_LAST_COUNTER_META_KEY)
+            _mobile_access_clear_code()
+            print("\n✓ TOTP Authenticator enabled successfully!\n")
+            print("Remote mobile access now requires authenticator codes.")
+            print("Access codes have been disabled.")
+            return
+        remaining = 2 - attempt
+        print(f"   ✗ Invalid code. {remaining} attempt(s) remaining." if remaining else "   ✗ Invalid code. Setup failed.")
+    print("\nSetup aborted. TOTP was not enabled.")
+    print("Run `claude-web --setup-totp` to try again.")
 
 
 def _mobile_access_totp_verify(code: str, secret: str, *, consume: bool = False) -> bool:
@@ -4187,8 +4727,8 @@ def import_cli_sessions(session_ids: List[str], cwd_filter: str = "", paths: Opt
                     """
                     INSERT INTO sessions (
                         id, title, cwd, created_at, updated_at,
-                        remote_session_id, remote_ready, summary_cache, tags
-                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                        remote_session_id, remote_ready, summary_cache, tags, runtime_origin
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'claude_cli')
                     """,
                     (
                         local_id,
@@ -4206,7 +4746,7 @@ def import_cli_sessions(session_ids: List[str], cwd_filter: str = "", paths: Opt
                     """
                     UPDATE sessions
                     SET title = ?, cwd = ?, updated_at = ?, remote_session_id = ?,
-                        remote_ready = 1, summary_cache = ?, tags = CASE
+                        remote_ready = 1, runtime_origin = 'claude_cli', summary_cache = ?, tags = CASE
                             WHEN tags = '' THEN 'imported-cli'
                             WHEN instr(',' || tags || ',', ',imported-cli,') > 0 THEN tags
                             ELSE tags || ',imported-cli'
@@ -4256,6 +4796,14 @@ def resolve_remote_session_state(session_id: str, row: Optional[sqlite3.Row], ev
         return session_id, has_remote_events
     remote_session_id = (row["remote_session_id"] or "").strip() or session_id
     if (row["remote_session_id"] or "").strip():
+        detached_by_compaction = any(
+            event.get("type") == "user_input"
+            and event.get("compacted") is True
+            and event.get("remote_detached") is True
+            for event in events
+        )
+        if detached_by_compaction and not bool(row["remote_ready"]):
+            return remote_session_id, False
         return remote_session_id, bool(row["remote_ready"]) or has_remote_events
     return remote_session_id, has_remote_events
 
@@ -4266,6 +4814,33 @@ def set_session_remote_state(session_id: str, remote_session_id: str, remote_rea
         conn.execute(
             "UPDATE sessions SET remote_session_id = ?, remote_ready = ?, updated_at = ? WHERE id = ?",
             (remote_session_id, 1 if remote_ready else 0, now, session_id),
+        )
+
+
+_RUNTIME_ORIGIN_AGENT_SDK = "claude_agent_sdk"
+_RUNTIME_ORIGIN_CLI = "claude_cli"
+_VALID_RUNTIME_ORIGINS = {_RUNTIME_ORIGIN_AGENT_SDK, _RUNTIME_ORIGIN_CLI}
+
+
+def normalize_runtime_origin(value: object) -> str:
+    normalized = str(value or "").strip()
+    return normalized if normalized in _VALID_RUNTIME_ORIGINS else ""
+
+
+def set_session_runtime_origin(session_id: str, runtime_origin: str) -> None:
+    normalized = normalize_runtime_origin(runtime_origin)
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET runtime_origin = ?, updated_at = ? WHERE id = ?",
+            (normalized, time.time(), session_id),
+        )
+
+
+def set_session_native_user_offset(session_id: str, offset: int) -> None:
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE sessions SET native_user_offset = ?, updated_at = ? WHERE id = ?",
+            (max(0, int(offset)), time.time(), session_id),
         )
 
 
@@ -4295,7 +4870,7 @@ def iter_session_compact_backups(session_id: str) -> List[Path]:
         return []
 
 
-def _mobile_safe_chat_request(request: Request, req: ChatRequest) -> ChatRequest:
+def _authenticated_remote_chat_request(request: Request, req: ChatRequest) -> ChatRequest:
     if not _is_mobile_access_request(request):
         return req
     session_id = (req.session_id or "").strip()
@@ -4309,33 +4884,285 @@ def _mobile_safe_chat_request(request: Request, req: ChatRequest) -> ChatRequest
         _require_mobile_cwd_is_known(request, work_dir)
     else:
         work_dir = str(_DATA_DIR)
-    if req.permission_mode in {"acceptEdits", "auto", "bypassPermissions"} or req.allowed_tools:
-        raise HTTPException(status_code=403, detail="mobile access only supports safe chat permissions")
-    return req.copy(update={
-        "cwd": work_dir,
-        "permission_mode": "default",
-        "allowed_tools": None,
-        "disallowed_tools": req.disallowed_tools or None,
-        "system_prompt": None,
-    })
+    # The mobile-access middleware has already authenticated this device. Give
+    # it the same tool permission modes as the local UI while retaining the
+    # saved-project boundary for remote directory selection.
+    if hasattr(req, "model_copy"):
+        return req.model_copy(update={"cwd": work_dir})
+    return req.copy(update={"cwd": work_dir})
+
+
+def _agent_sdk_message_content(message: str, images: List[str]) -> List[dict]:
+    """Reuse the stream-json encoder so SDK and explicit CLI runtimes see identical input."""
+    payload = json.loads(build_image_input_message(message, images).decode("utf-8"))
+    content = (payload.get("message") or {}).get("content") or []
+    return content if isinstance(content, list) else [{"type": "text", "text": message}]
+
+
+async def _drain_detached_agent_sdk_turn(
+    *,
+    turn: AgentSdkTurn,
+    session_id: str,
+    native_remote_id: str,
+    remote_became_ready: bool,
+    work_dir: str,
+    display_text: str,
+    git_dirty_before: Dict[str, str],
+    workspace_mode: Optional[str],
+    code_write_intent_seen: bool,
+    code_write_targets: Set[str],
+) -> None:
+    """Keep a native turn alive after its browser SSE subscriber disconnects."""
+    try:
+        async for envelope in turn.events():
+            envelope_type = envelope.get("type")
+            if envelope_type == "done":
+                discovered = str(envelope.get("sessionId") or "").strip()
+                if discovered:
+                    native_remote_id = discovered
+                    remote_became_ready = True
+                break
+            if envelope_type == "error":
+                if session_id in _stopped_sessions:
+                    continue
+                err_event = classify_claude_error(str(envelope.get("message") or "Claude Agent SDK failed"))
+                append_event(session_id, err_event)
+                _notification_send_chat_error(session_id, work_dir, err_event)
+                continue
+            # Pending permission requests live in the bridge and are restored
+            # through /permissions/pending. They are transient UI state, not
+            # conversation history.
+            if envelope_type == "permission_request":
+                continue
+            if envelope_type != "event" or not isinstance(envelope.get("event"), dict):
+                continue
+            obj = envelope["event"]
+            event_type = obj.get("type")
+            discovered = str(obj.get("session_id") or obj.get("sessionId") or "").strip()
+            if discovered:
+                native_remote_id = discovered
+            content = (obj.get("message") or {}).get("content") or []
+            is_tool_result_event = (
+                event_type == "user"
+                and isinstance(content, list)
+                and any(
+                    isinstance(block, dict) and block.get("type") == "tool_result"
+                    for block in content
+                )
+            )
+            if (event_type == "user" and not is_tool_result_event) or event_type == "control_response":
+                continue
+            if session_has_remote_conversation([obj]):
+                remote_became_ready = True
+            saw_write, targets = code_write_intent_from_event(obj, work_dir)
+            if saw_write:
+                code_write_intent_seen = True
+            if targets:
+                code_write_targets.update(targets)
+            if event_type == "result" and not obj.get("parent_tool_use_id"):
+                changed_files = await git_changed_files_since(work_dir, git_dirty_before)
+                obj["changed_files"] = filter_code_changed_files(
+                    changed_files,
+                    code_write_targets,
+                    code_write_intent_seen,
+                )
+            if event_type != "stream_event" and not (
+                event_type == "system" and str(obj.get("subtype") or "").startswith("hook_")
+            ):
+                append_event(session_id, obj)
+                if event_type == "result":
+                    record_usage(session_id, obj)
+    except asyncio.CancelledError:
+        await _claude_agent_bridge.abandon_turn(turn)
+        raise
+    except Exception as exc:
+        if session_id not in _stopped_sessions:
+            err_event = classify_claude_error(str(exc))
+            append_event(session_id, err_event)
+            _notification_send_chat_error(session_id, work_dir, err_event)
+    finally:
+        _agent_sdk_running_sessions.discard(session_id)
+        _stopped_sessions.discard(session_id)
+        _agent_sdk_detached_turn_tasks.pop(session_id, None)
+        upsert_session(session_id, derive_title(display_text), work_dir, workspace_mode)
+        if remote_became_ready and native_remote_id:
+            set_session_remote_state(session_id, native_remote_id, True)
+
+
+def _agent_sdk_streaming_response(
+    *,
+    turn: AgentSdkTurn,
+    session_id: str,
+    remote_session_id: str,
+    remote_ready: bool,
+    work_dir: str,
+    display_text: str,
+    checkpoint: Optional[dict],
+    git_dirty_before: Dict[str, str],
+    workspace_mode: Optional[str],
+) -> StreamingResponse:
+    """Forward native SDK messages through the existing SSE/history contract."""
+
+    async def generate():
+        detached = False
+        native_remote_id = remote_session_id
+        remote_became_ready = remote_ready
+        code_write_intent_seen = False
+        code_write_targets: Set[str] = set()
+        _stopped_sessions.discard(session_id)
+        sdk_version = (_claude_agent_bridge.sdk_info or {}).get("version")
+        meta = {
+            "type": "meta",
+            "session_id": session_id,
+            "cwd": work_dir,
+            "has_checkpoint": checkpoint is not None,
+            "runtime": "claude_agent_sdk",
+            "sdk_version": sdk_version,
+        }
+        try:
+            yield f"data: {json.dumps(meta, ensure_ascii=False)}\n\n"
+            async for envelope in turn.events():
+                envelope_type = envelope.get("type")
+                if envelope_type == "done":
+                    discovered = str(envelope.get("sessionId") or "").strip()
+                    if discovered:
+                        native_remote_id = discovered
+                        remote_became_ready = True
+                    break
+                if envelope_type == "error":
+                    if session_id in _stopped_sessions:
+                        continue
+                    err_event = classify_claude_error(str(envelope.get("message") or "Claude Agent SDK failed"))
+                    append_event(session_id, err_event)
+                    _notification_send_chat_error(session_id, work_dir, err_event)
+                    yield f"data: {json.dumps(err_event, ensure_ascii=False)}\n\n"
+                    continue
+                if envelope_type == "permission_request":
+                    permission_event = {
+                        "type": "permission_request",
+                        "approval_id": envelope.get("approvalId"),
+                        "tool_name": envelope.get("toolName"),
+                        "input": envelope.get("input") or {},
+                        "suggestions": envelope.get("suggestions") or [],
+                        "tool_use_id": envelope.get("toolUseId"),
+                        "agent_id": envelope.get("agentId"),
+                        "blocked_path": envelope.get("blockedPath"),
+                        "decision_reason": envelope.get("decisionReason"),
+                        "title": envelope.get("title"),
+                        "display_name": envelope.get("displayName"),
+                        "description": envelope.get("description"),
+                    }
+                    yield f"data: {json.dumps(permission_event, ensure_ascii=False)}\n\n"
+                    continue
+                if envelope_type != "event" or not isinstance(envelope.get("event"), dict):
+                    continue
+
+                obj = envelope["event"]
+                event_type = obj.get("type")
+                discovered = str(obj.get("session_id") or obj.get("sessionId") or "").strip()
+                if discovered:
+                    native_remote_id = discovered
+
+                # Native resume can replay user messages. Keep tool results, but
+                # do not duplicate plain user bubbles already stored by FastAPI.
+                content = (obj.get("message") or {}).get("content") or []
+                is_tool_result_event = (
+                    event_type == "user"
+                    and isinstance(content, list)
+                    and any(
+                        isinstance(block, dict) and block.get("type") == "tool_result"
+                        for block in content
+                    )
+                )
+                if (event_type == "user" and not is_tool_result_event) or event_type == "control_response":
+                    continue
+
+                if session_has_remote_conversation([obj]):
+                    remote_became_ready = True
+                saw_write, targets = code_write_intent_from_event(obj, work_dir)
+                if saw_write:
+                    code_write_intent_seen = True
+                if targets:
+                    code_write_targets.update(targets)
+                if event_type == "result" and not obj.get("parent_tool_use_id"):
+                    changed_files = await git_changed_files_since(work_dir, git_dirty_before)
+                    obj["changed_files"] = filter_code_changed_files(
+                        changed_files,
+                        code_write_targets,
+                        code_write_intent_seen,
+                    )
+
+                if event_type != "stream_event" and not (
+                    event_type == "system" and str(obj.get("subtype") or "").startswith("hook_")
+                ):
+                    append_event(session_id, obj)
+                    if event_type == "result":
+                        record_usage(session_id, obj)
+                yield f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            detached = True
+            task = asyncio.create_task(
+                _drain_detached_agent_sdk_turn(
+                    turn=turn,
+                    session_id=session_id,
+                    native_remote_id=native_remote_id,
+                    remote_became_ready=remote_became_ready,
+                    work_dir=work_dir,
+                    display_text=display_text,
+                    git_dirty_before=git_dirty_before,
+                    workspace_mode=workspace_mode,
+                    code_write_intent_seen=code_write_intent_seen,
+                    code_write_targets=set(code_write_targets),
+                )
+            )
+            _agent_sdk_detached_turn_tasks[session_id] = task
+            raise
+        except Exception as exc:
+            if session_id not in _stopped_sessions:
+                err_event = classify_claude_error(str(exc))
+                append_event(session_id, err_event)
+                _notification_send_chat_error(session_id, work_dir, err_event)
+                yield f"data: {json.dumps(err_event, ensure_ascii=False)}\n\n"
+        finally:
+            if not detached:
+                _agent_sdk_running_sessions.discard(session_id)
+                _stopped_sessions.discard(session_id)
+                upsert_session(session_id, derive_title(display_text), work_dir, workspace_mode)
+                if remote_became_ready and native_remote_id:
+                    set_session_remote_state(session_id, native_remote_id, True)
+
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/chat")
 async def chat(request: Request, req: ChatRequest):
-    return await _chat_response(_mobile_safe_chat_request(request, req))
+    return await _chat_response(_authenticated_remote_chat_request(request, req))
 
 
-async def _chat_response(req: ChatRequest):
+async def _chat_response(req: ChatRequest, *, agent_loop_owner: bool = False):
     session_id = req.session_id or str(uuid.uuid4())
-    if session_id in _compacting_sessions:
-        raise HTTPException(status_code=409, detail="session is compacting")
+    if _session_runtime_busy(session_id) or session_id in _compacting_sessions:
+        raise HTTPException(status_code=409, detail="session is busy")
+    if not agent_loop_owner and _session_agent_loop_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is owned by a running Agent Loop")
     existing_events = load_events(session_id) if req.session_id else []
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT cwd, remote_session_id, remote_ready FROM sessions WHERE id = ?",
+            """
+            SELECT cwd, remote_session_id, remote_ready, runtime_origin, workspace_mode,
+                   native_user_offset
+            FROM sessions WHERE id = ?
+            """,
             (session_id,),
         ).fetchone()
 
+    runtime_origin = normalize_runtime_origin(row["runtime_origin"] if row else "")
     remote_session_id, remote_ready = resolve_remote_session_state(session_id, row, existing_events)
     if req.force_new is True:
         stored_remote_id = ((row["remote_session_id"] or "").strip() if row else "")
@@ -4345,18 +5172,45 @@ async def _chat_response(req: ChatRequest):
         elif row is not None and remote_ready:
             remote_session_id = str(uuid.uuid4())
         remote_ready = False
+        runtime_origin = ""
 
     is_new = not remote_ready
     work_dir = req.cwd or (row["cwd"] if row and row["cwd"] else os.path.expanduser("~"))
-    code_workspace = (req.workspace_mode or "").strip().lower() == "code"
+    requested_workspace_mode = (req.workspace_mode or "").strip().lower()
+    stored_workspace_mode = ((row["workspace_mode"] or "chat").strip().lower() if row else "chat")
+    workspace_mode = requested_workspace_mode or stored_workspace_mode
+    if workspace_mode not in {"chat", "code"}:
+        workspace_mode = "chat"
+    # Persist the effective mode on the request object because the existing
+    # permission/tool helpers consume it.  An omitted workspace_mode must never
+    # turn an existing SDK-owned Code session into a legacy CLI request.
+    req.workspace_mode = workspace_mode
+    code_workspace = workspace_mode == "code"
+    legacy_locally_compacted_code = code_workspace and any(
+        event.get("type") == "user_input"
+        and event.get("compacted") is True
+        and event.get("remote_detached") is True
+        for event in existing_events
+    )
+    if legacy_locally_compacted_code and not runtime_origin:
+        # Preserve pre-SDK sessions that were already detached by the old
+        # app-managed summary strategy. They must finish on the CLI path rather
+        # than feeding that custom summary into a newly SDK-owned conversation.
+        runtime_origin = _RUNTIME_ORIGIN_CLI
+        set_session_runtime_origin(session_id, runtime_origin)
     full_message = req.message
     if code_workspace:
         attachment_context = _code_mode_attachment_context(req.docs, req.images)
         if attachment_context and attachment_context not in full_message:
             full_message = attachment_context + full_message
+    stored_full_message = full_message
+    if not remote_ready and (not code_workspace or runtime_origin == _RUNTIME_ORIGIN_CLI):
+        resume_context = build_compacted_resume_context(existing_events)
+        if resume_context:
+            full_message = resume_context + full_message
     display_text = req.display_message if req.display_message is not None else req.message
     effective_permission_mode = _effective_permission_mode_for_workspace(
-        req.workspace_mode,
+        workspace_mode,
         req.permission_mode,
     )
     _apply_code_workspace_tool_defaults(req, effective_permission_mode)
@@ -4376,11 +5230,96 @@ async def _chat_response(req: ChatRequest):
     # When the prompt was rewritten on the client (doc content / URL fetch / web-search prefix
     # injected), keep the full sent text so badge previews can recover doc bodies even
     # after the upload file is pruned. Only stored when it actually differs.
-    if full_message != display_text:
-        user_event["full_text"] = full_message
-    upsert_session(session_id, derive_title(display_text), work_dir, req.workspace_mode)
-    append_event(session_id, user_event)
+    if stored_full_message != display_text:
+        user_event["full_text"] = stored_full_message
+    upsert_session(session_id, derive_title(display_text), work_dir, workspace_mode)
     set_session_remote_state(session_id, remote_session_id, remote_ready and not is_new)
+    if req.force_new is True:
+        set_session_runtime_origin(session_id, "")
+        set_session_native_user_offset(session_id, 0)
+
+    use_agent_sdk = code_workspace and runtime_origin != _RUNTIME_ORIGIN_CLI
+    if use_agent_sdk:
+        if not _claude_agent_bridge.enabled and runtime_origin == _RUNTIME_ORIGIN_AGENT_SDK:
+            await discard_git_checkpoint(checkpoint, work_dir)
+            raise HTTPException(
+                status_code=409,
+                detail="This Code session is owned by Claude Agent SDK; CLI fallback is disabled to protect session continuity.",
+            )
+        if _claude_agent_bridge.enabled:
+            if not await _claude_agent_bridge.ensure_started():
+                await discard_git_checkpoint(checkpoint, work_dir)
+                raise HTTPException(
+                    status_code=503,
+                    detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable",
+                )
+            agent_params = {
+                "cwd": work_dir,
+                "content": _agent_sdk_message_content(full_message, req.images or []),
+                "model": req.model,
+                "effort": req.effort or "high",
+                "permissionMode": effective_permission_mode,
+                "allowedTools": req.allowed_tools,
+                "disallowedTools": req.disallowed_tools,
+                "runtimeEpoch": remote_session_id,
+            }
+            if remote_ready and not is_new:
+                agent_params["resumeSessionId"] = remote_session_id
+            else:
+                agent_params["sessionId"] = remote_session_id
+            try:
+                turn = await _claude_agent_bridge.open_turn(session_id, agent_params)
+            except asyncio.TimeoutError as exc:
+                try:
+                    await _claude_agent_bridge.close_session(session_id)
+                except Exception:
+                    pass
+                await discard_git_checkpoint(checkpoint, work_dir)
+                raise HTTPException(
+                    status_code=504,
+                    detail="Claude Agent SDK did not acknowledge the turn; CLI fallback was blocked to prevent duplicate execution.",
+                ) from exc
+            except AgentSdkBridgeError as exc:
+                message = str(exc)
+                status_code = (
+                    429 if "runtime limit reached" in message
+                    else (409 if "already running" in message or "active turn" in message else 502)
+                )
+                await discard_git_checkpoint(checkpoint, work_dir)
+                raise HTTPException(status_code=status_code, detail=message) from exc
+            append_event(session_id, user_event)
+            set_session_runtime_origin(session_id, _RUNTIME_ORIGIN_AGENT_SDK)
+            _agent_sdk_running_sessions.add(session_id)
+            return _agent_sdk_streaming_response(
+                turn=turn,
+                session_id=session_id,
+                remote_session_id=remote_session_id,
+                remote_ready=remote_ready,
+                work_dir=work_dir,
+                display_text=display_text,
+                checkpoint=checkpoint,
+                git_dirty_before=git_dirty_before,
+                workspace_mode=workspace_mode,
+            )
+        # An explicit CLAUDE_WEB_CODE_RUNTIME=cli setting may select the legacy
+        # runtime only for a new/unowned Code session. Once pinned, ownership is
+        # never changed implicitly.
+        if runtime_origin == _RUNTIME_ORIGIN_AGENT_SDK:
+            await discard_git_checkpoint(checkpoint, work_dir)
+            raise HTTPException(
+                status_code=409,
+                detail="This Code session is owned by Claude Agent SDK and cannot be opened with Claude CLI.",
+            )
+
+    append_event(session_id, user_event)
+    if code_workspace:
+        if runtime_origin == _RUNTIME_ORIGIN_AGENT_SDK:
+            await discard_git_checkpoint(checkpoint, work_dir)
+            raise HTTPException(
+                status_code=409,
+                detail="This Code session is owned by Claude Agent SDK and cannot be opened with Claude CLI.",
+            )
+        set_session_runtime_origin(session_id, _RUNTIME_ORIGIN_CLI)
 
     async def generate():
         remote_became_ready = remote_ready and not is_new
@@ -4389,6 +5328,7 @@ async def _chat_response(req: ChatRequest):
             "session_id": session_id,
             "cwd": work_dir,
             "has_checkpoint": checkpoint is not None,
+            "runtime": "claude_cli",
         }
         yield f"data: {json.dumps(meta)}\n\n"
 
@@ -4398,7 +5338,7 @@ async def _chat_response(req: ChatRequest):
         )
         current_sig = _proc_sig(
             remote_session_id,
-            req.model, effective_permission_mode, effective_system_prompt,
+            req.model, req.effort, effective_permission_mode, effective_system_prompt,
             work_dir, req.allowed_tools, req.disallowed_tools,
         )
 
@@ -4414,11 +5354,13 @@ async def _chat_response(req: ChatRequest):
                 await _terminate_process(warm.process)
                 warm = None
 
-        # ── Kill any duplicate in-flight request (fast double-click / retry) ─
-        existing = _running_processes.pop(session_id, None)
+        # A duplicate request must never replace a live owner: doing so can mix
+        # events or tool side effects from two runtimes for one local session.
+        existing = _running_processes.get(session_id)
         if existing is not None:
-            _terminated_processes.add(existing)
-            await _terminate_process(existing)
+            err_event = {"type": "error", "message": "session is already running"}
+            yield f"data: {json.dumps(err_event)}\n\n"
+            return
         _stopped_sessions.discard(session_id)
 
         # ── Build CLI args (only needed when spawning a fresh process) ────────
@@ -4601,7 +5543,7 @@ async def _chat_response(req: ChatRequest):
                 _running_write_locks.pop(session_id, None)
             _terminated_processes.discard(process)
 
-            upsert_session(session_id, derive_title(display_text), work_dir)
+            upsert_session(session_id, derive_title(display_text), work_dir, workspace_mode)
             if remote_became_ready:
                 set_session_remote_state(session_id, remote_session_id, True)
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
@@ -4646,10 +5588,24 @@ async def _agent_loop_emit(job: AgentLoopJob, event: dict) -> None:
         job.condition.notify_all()
 
 
-def _agent_loop_usage_total(usage: Optional[dict]) -> int:
+def _agent_loop_incremental_prompt_tokens(prompt: str) -> int:
+    """Estimate only the new prompt material added by this loop iteration.
+
+    SDK input/cache usage describes the whole active context and can be larger
+    than the loop budget on the first turn. The loop budget is intentionally an
+    incremental generation budget: newly submitted prompt text plus model
+    output, not the pre-existing conversation or cache reads.
+    """
+    text = prompt or ""
+    cjk = len(re.findall(r"[\u3400-\u9fff]", text))
+    other = max(0, len(text) - cjk)
+    return cjk + ((other + 3) // 4)
+
+
+def _agent_loop_usage_total(usage: Optional[dict], prompt: str = "") -> int:
     if not isinstance(usage, dict):
-        return 0
-    return int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0) + int(usage.get("cache_read_input_tokens") or 0) + int(usage.get("cache_creation_input_tokens") or 0)
+        usage = {}
+    return _agent_loop_incremental_prompt_tokens(prompt) + int(usage.get("output_tokens") or 0)
 
 
 def _agent_loop_detect_test_command(cwd: str) -> Tuple[str, str]:
@@ -4898,7 +5854,7 @@ async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeou
 
 
 async def _agent_loop_chat_turn(job: AgentLoopJob, req: ChatRequest, turn: int) -> dict:
-    response = await _chat_response(req)
+    response = await _chat_response(req, agent_loop_owner=True)
     last_result = None
     assistant_text: List[str] = []
     stream_error = None
@@ -5007,15 +5963,17 @@ async def _agent_loop_runner(job: AgentLoopJob, req: AgentLoopStartRequest) -> N
                 session_id=job.session_id,
                 cwd=cwd,
                 model=req.model,
+                effort=req.effort,
                 system_prompt=req.system_prompt,
                 display_message=display,
                 permission_mode=req.permission_mode,
                 allowed_tools=req.allowed_tools,
                 disallowed_tools=req.disallowed_tools,
                 force_new=(req.force_new is not False and turn == 1),
+                workspace_mode="code",
             )
             result = await _agent_loop_chat_turn(job, chat_req, turn)
-            used_tokens += _agent_loop_usage_total(result.get("usage"))
+            used_tokens += _agent_loop_usage_total(result.get("usage"), prompt)
             await _agent_loop_emit(job, {"type": "agent_loop_turn_done", "turn": turn, "used_tokens": used_tokens, "token_budget": token_budget})
             if job.stop_requested:
                 final_status = "stopped"
@@ -5124,15 +6082,8 @@ async def active_agent_loop(session_id: str = Query(default="")):
 @app.post("/api/agent-loop/start")
 async def start_agent_loop(request: Request, req: AgentLoopStartRequest):
     if _is_mobile_access_request(request):
-        if req.permission_mode in {"acceptEdits", "auto", "bypassPermissions"} or req.allowed_tools or (req.test_command or "").strip():
-            raise HTTPException(status_code=403, detail="mobile access can only start safe agent loops")
         if req.cwd:
             _require_mobile_cwd_is_known(request, req.cwd)
-        req.permission_mode = "default"
-        req.allowed_tools = None
-        req.disallowed_tools = req.disallowed_tools or None
-        req.system_prompt = None
-        req.test_command = ""
     goal = (req.goal or "").strip()
     if not goal:
         raise HTTPException(status_code=400, detail="goal required")
@@ -5200,6 +6151,19 @@ async def stop_agent_loop(job_id: str):
 
 @app.post("/api/chat/stop/{session_id}")
 async def stop_chat(session_id: str):
+    if session_id in _agent_sdk_running_sessions:
+        _stopped_sessions.add(session_id)
+        try:
+            await _claude_agent_bridge.interrupt(session_id)
+        except Exception as exc:
+            _log.warning("Claude Agent SDK interrupt failed for %s: %s", session_id, exc)
+            try:
+                await _claude_agent_bridge.close_session(session_id)
+            except Exception:
+                pass
+        stop_event = {"type": "error", "message": "用户中止", "ts": time.time()}
+        append_event(session_id, stop_event)
+        return {"ok": True, "runtime": "claude_agent_sdk"}
     process = _running_processes.get(session_id)
     if process is None:
         raise HTTPException(status_code=404, detail="no running process for this session")
@@ -5224,6 +6188,290 @@ async def stop_chat(session_id: str):
     stop_event = {"type": "error", "message": "用户中止", "ts": time.time()}
     append_event(session_id, stop_event)
     return {"ok": True}
+
+
+def _agent_sdk_session_row(session_id: str) -> sqlite3.Row:
+    with db_connect() as conn:
+        row = conn.execute(
+            """
+            SELECT id, cwd, remote_session_id, remote_ready, workspace_mode, runtime_origin,
+                   native_user_offset
+            FROM sessions WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if (row["workspace_mode"] or "chat") != "code":
+        raise HTTPException(status_code=409, detail="native Claude Agent SDK controls require a Code session")
+    if normalize_runtime_origin(row["runtime_origin"]) == _RUNTIME_ORIGIN_CLI:
+        raise HTTPException(status_code=409, detail="this session is owned by Claude CLI")
+    return row
+
+
+def _agent_sdk_control_params(row: sqlite3.Row, req: NativeCompactRequest) -> dict:
+    remote_session_id = (row["remote_session_id"] or "").strip() or row["id"]
+    params = {
+        "cwd": row["cwd"] or os.path.expanduser("~"),
+        "model": req.model,
+        "effort": _normalize_effort(req.effort) or "high",
+        "permissionMode": _effective_permission_mode_for_workspace("code", req.permission_mode),
+        "allowedTools": req.allowed_tools,
+        "disallowedTools": req.disallowed_tools,
+        "runtimeEpoch": remote_session_id,
+    }
+    if bool(row["remote_ready"]):
+        params["resumeSessionId"] = remote_session_id
+    else:
+        params["sessionId"] = remote_session_id
+    return params
+
+
+@app.post("/api/sessions/{session_id}/permissions/{approval_id}")
+async def resolve_agent_sdk_permission(
+    session_id: str,
+    approval_id: str,
+    req: PermissionDecisionRequest,
+):
+    if not re.fullmatch(r"[0-9a-fA-F-]{32,36}", approval_id):
+        raise HTTPException(status_code=400, detail="invalid approval id")
+    row = _agent_sdk_session_row(session_id)
+    if session_id not in _agent_sdk_running_sessions:
+        raise HTTPException(status_code=409, detail="session has no active permission request")
+    try:
+        result = await _claude_agent_bridge.respond_permission(
+            session_id,
+            approval_id,
+            allow=req.allow,
+            use_suggestions=bool(req.always_allow),
+            updated_input=req.updated_input,
+            message=req.message or "",
+            interrupt=bool(req.interrupt),
+        )
+    except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, "response": result, "session_id": row["id"]}
+
+
+@app.get("/api/sessions/{session_id}/context-usage")
+async def agent_sdk_context_usage(
+    session_id: str,
+    model: Optional[str] = Query(default=None),
+    effort: Optional[str] = Query(default=None),
+    permission_mode: Optional[str] = Query(default=None),
+    allowed_tools: Optional[List[str]] = Query(default=None),
+    disallowed_tools: Optional[List[str]] = Query(default=None),
+):
+    row = _agent_sdk_session_row(session_id)
+    if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+        raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+    params = _agent_sdk_control_params(
+        row,
+        NativeCompactRequest(
+            model=model,
+            effort=effort,
+            permission_mode=permission_mode,
+            allowed_tools=allowed_tools,
+            disallowed_tools=disallowed_tools,
+        ),
+    )
+    try:
+        response = await _claude_agent_bridge.context_usage(session_id, params, timeout=180.0)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Claude Agent SDK context usage timed out") from exc
+    except AgentSdkBridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    usage = response.get("usage") or {}
+    if not isinstance(usage, dict):
+        raise HTTPException(status_code=502, detail="Claude Agent SDK returned invalid context usage")
+    set_session_runtime_origin(session_id, _RUNTIME_ORIGIN_AGENT_SDK)
+    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, **usage}
+
+
+@app.post("/api/sessions/{session_id}/runtime/model")
+async def set_agent_sdk_model(session_id: str, req: NativeModelControlRequest):
+    row = _agent_sdk_session_row(session_id)
+    if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+        raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+    try:
+        response = await _claude_agent_bridge.set_model(
+            session_id,
+            req.model,
+            runtime_epoch=(row["remote_session_id"] or "").strip() or row["id"],
+        )
+    except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, "response": response}
+
+
+@app.post("/api/sessions/{session_id}/runtime/permission-mode")
+async def set_agent_sdk_permission_mode(session_id: str, req: NativePermissionControlRequest):
+    row = _agent_sdk_session_row(session_id)
+    mode = _effective_permission_mode_for_workspace("code", req.permission_mode)
+    if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+        raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+    try:
+        response = await _claude_agent_bridge.set_permission_mode(
+            session_id,
+            mode,
+            runtime_epoch=(row["remote_session_id"] or "").strip() or row["id"],
+        )
+    except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, "response": response}
+
+
+@app.get("/api/sessions/{session_id}/permissions/pending")
+async def pending_agent_sdk_permissions(session_id: str):
+    _agent_sdk_session_row(session_id)
+    pending: List[dict] = []
+    if _claude_agent_bridge.running:
+        try:
+            response = await _claude_agent_bridge.pending_permissions(session_id)
+            pending = response.get("pending") or []
+        except (AgentSdkBridgeError, asyncio.TimeoutError):
+            pending = []
+    return {
+        "ok": True,
+        "running": session_id in _agent_sdk_running_sessions,
+        "pending": pending,
+        "event_count": len(load_events(session_id)),
+    }
+
+
+@app.post("/api/sessions/{session_id}/rewind/native")
+async def rewind_agent_sdk_files(session_id: str, req: NativeRewindRequest):
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
+    row = _agent_sdk_session_row(session_id)
+    if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+        raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+    user_message_id = (req.user_message_id or "").strip()
+    if not user_message_id and req.event_index is not None and req.event_index >= 0:
+        remote_session_id = (row["remote_session_id"] or "").strip() or row["id"]
+        try:
+            transcript = await _claude_agent_bridge.session_messages(
+                remote_session_id,
+                cwd=row["cwd"] or os.path.expanduser("~"),
+            )
+        except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        plain_user_seen = -1
+        for message in transcript:
+            if message.get("type") != "user":
+                continue
+            content = (message.get("message") or {}).get("content") if isinstance(message.get("message"), dict) else []
+            is_tool_result = isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+            )
+            if is_tool_result:
+                continue
+            plain_user_seen += 1
+            if plain_user_seen == int(row["native_user_offset"] or 0) + req.event_index:
+                user_message_id = str(message.get("uuid") or "").strip()
+                break
+    if not re.fullmatch(r"[0-9a-fA-F-]{16,64}", user_message_id):
+        raise HTTPException(status_code=400, detail="unable to resolve native user message id")
+    params = _agent_sdk_control_params(row, req)
+    try:
+        response = await _claude_agent_bridge.rewind_files(
+            session_id,
+            user_message_id,
+            params,
+            dry_run=bool(req.dry_run),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Claude Agent SDK rewind timed out") from exc
+    except AgentSdkBridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, **response}
+
+
+@app.post("/api/sessions/{session_id}/compact/native")
+async def compact_agent_sdk_session(session_id: str, req: NativeCompactRequest):
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
+    row = _agent_sdk_session_row(session_id)
+    if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+        raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+    params = _agent_sdk_control_params(row, req)
+    params["content"] = _agent_sdk_message_content("/compact", [])
+    try:
+        turn = await _claude_agent_bridge.open_turn(session_id, params)
+    except asyncio.TimeoutError as exc:
+        try:
+            await _claude_agent_bridge.close_session(session_id)
+        except Exception:
+            pass
+        raise HTTPException(status_code=504, detail="Claude Agent SDK did not acknowledge native compact") from exc
+    except AgentSdkBridgeError as exc:
+        message = str(exc)
+        status_code = (
+            429 if "runtime limit reached" in message
+            else (409 if "already running" in message or "active turn" in message else 502)
+        )
+        raise HTTPException(status_code=status_code, detail=message) from exc
+
+    _compacting_sessions.add(session_id)
+    _agent_sdk_running_sessions.add(session_id)
+    set_session_runtime_origin(session_id, _RUNTIME_ORIGIN_AGENT_SDK)
+    native_remote_id = (row["remote_session_id"] or "").strip() or session_id
+    compact_metadata: dict = {}
+    result_event: dict = {}
+    try:
+        async for envelope in turn.events():
+            envelope_type = envelope.get("type")
+            if envelope_type == "error":
+                raise AgentSdkBridgeError(str(envelope.get("message") or "Claude Agent SDK compact failed"))
+            if envelope_type == "done":
+                discovered = str(envelope.get("sessionId") or "").strip()
+                if discovered:
+                    native_remote_id = discovered
+                break
+            if envelope_type != "event" or not isinstance(envelope.get("event"), dict):
+                continue
+            obj = envelope["event"]
+            discovered = str(obj.get("session_id") or obj.get("sessionId") or "").strip()
+            if discovered:
+                native_remote_id = discovered
+            event_type = obj.get("type")
+            if event_type == "user" or event_type == "stream_event" or event_type == "control_response":
+                continue
+            if event_type == "system" and obj.get("subtype") == "compact_boundary":
+                compact_metadata = obj.get("compact_metadata") or {}
+            if event_type == "result" and not obj.get("parent_tool_use_id"):
+                result_event = obj
+                record_usage(session_id, obj)
+            if not (event_type == "system" and str(obj.get("subtype") or "").startswith("hook_")):
+                append_event(session_id, obj)
+        set_session_remote_state(session_id, native_remote_id, True)
+        context_usage: dict = {}
+        context_error = ""
+        try:
+            context_response = await _claude_agent_bridge.context_usage(session_id, params, timeout=180.0)
+            context_usage = context_response.get("usage") or {}
+        except Exception as exc:
+            context_error = str(exc)
+        return {
+            "ok": True,
+            "runtime": _RUNTIME_ORIGIN_AGENT_SDK,
+            "session_id": session_id,
+            "remote_session_id": native_remote_id,
+            "compact": compact_metadata,
+            "result_usage": result_event.get("usage") or {},
+            "context_usage": context_usage,
+            "context_error": context_error or None,
+        }
+    except asyncio.CancelledError:
+        await _claude_agent_bridge.abandon_turn(turn)
+        raise
+    except AgentSdkBridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    finally:
+        _agent_sdk_running_sessions.discard(session_id)
+        _compacting_sessions.discard(session_id)
+        _stopped_sessions.discard(session_id)
 
 
 @app.get("/api/extension/status")
@@ -5501,8 +6749,8 @@ async def get_extension_draft(request: Request, draft_id: str):
 @app.post("/api/sessions/{session_id}/prepare-fork")
 async def prepare_fork(request: Request, session_id: str, req: ForkRequest):
     _require_not_mobile_access(request)
-    if session_id in _compacting_sessions:
-        raise HTTPException(status_code=409, detail="session is compacting")
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
     events = load_events(session_id)
     user_event_positions = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
     if not user_event_positions or req.event_index < 0:
@@ -5515,11 +6763,63 @@ async def prepare_fork(request: Request, session_id: str, req: ForkRequest):
     new_text = req.new_text if req.new_text is not None and req.new_text.strip() else original_text
 
     with db_connect() as conn:
-        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT cwd, remote_session_id, remote_ready, runtime_origin, workspace_mode,
+                   native_user_offset
+            FROM sessions WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
     cwd = row["cwd"] if row else os.path.expanduser("~")
 
+    runtime_origin = normalize_runtime_origin(row["runtime_origin"] if row else "")
+    source_native_offset = int(row["native_user_offset"] or 0) if row else 0
+    native_source_id = ((row["remote_session_id"] or "").strip() if row else "")
+    native_fork = False
+    native_fork_id = ""
+    if row and row["workspace_mode"] == "code" and runtime_origin == _RUNTIME_ORIGIN_AGENT_SDK and row["remote_ready"]:
+        if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+            raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+        try:
+            transcript = await _claude_agent_bridge.session_messages(native_source_id, cwd=cwd)
+            plain_user_seen = -1
+            anchor_id = ""
+            for message in transcript:
+                message_type = str(message.get("type") or "")
+                content = (message.get("message") or {}).get("content") if isinstance(message.get("message"), dict) else []
+                is_tool_result = message_type == "user" and isinstance(content, list) and any(
+                    isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+                )
+                if message_type == "user" and not is_tool_result:
+                    plain_user_seen += 1
+                    if plain_user_seen == source_native_offset + event_index:
+                        break
+                message_id = str(message.get("uuid") or "").strip()
+                if message_id:
+                    anchor_id = message_id
+            if source_native_offset + event_index > 0 and not anchor_id:
+                raise AgentSdkBridgeError("Unable to locate the native branch point in the Claude transcript")
+            if anchor_id:
+                forked = await _claude_agent_bridge.fork_session(
+                    native_source_id,
+                    cwd=cwd,
+                    up_to_message_id=anchor_id,
+                    title=f"Fork of {session_id[:8]}",
+                )
+                native_fork_id = str(forked.get("sessionId") or "").strip()
+                if not native_fork_id:
+                    raise AgentSdkBridgeError("Claude Agent SDK returned no forked session id")
+                native_fork = True
+        except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
     new_id = str(uuid.uuid4())
-    upsert_session(new_id, derive_title(new_text), cwd)
+    upsert_session(new_id, derive_title(new_text), cwd, row["workspace_mode"] if row else "code")
+    if native_fork:
+        set_session_remote_state(new_id, native_fork_id, True)
+        set_session_runtime_origin(new_id, _RUNTIME_ORIGIN_AGENT_SDK)
+        set_session_native_user_offset(new_id, source_native_offset + event_index)
 
     with db_connect() as conn:
         conn.execute(
@@ -5528,7 +6828,9 @@ async def prepare_fork(request: Request, session_id: str, req: ForkRequest):
         )
 
     context = format_context_snippet(events_before)
-    if context:
+    if native_fork:
+        packed_message = new_text
+    elif context:
         packed_message = (
             "【以下是之前的对话历史，仅作为参考上下文（不要重复回应历史问题）】\n"
             f"{context}\n\n"
@@ -5544,13 +6846,15 @@ async def prepare_fork(request: Request, session_id: str, req: ForkRequest):
         "sent_message": packed_message,
         "display_message": new_text,
         "forked_from": session_id,
+        "native_fork": native_fork,
+        "remote_session_id": native_fork_id or None,
     }
 
 
 @app.post("/api/sessions/{session_id}/prepare-inline-edit")
 async def prepare_inline_edit(request: Request, session_id: str, req: ForkRequest):
     _require_not_mobile_access(request)
-    if session_id in _running_processes or session_id in _compacting_sessions:
+    if _session_control_busy(session_id):
         raise HTTPException(status_code=409, detail="session is busy")
 
     events = load_events(session_id)
@@ -5566,16 +6870,74 @@ async def prepare_inline_edit(request: Request, session_id: str, req: ForkReques
     new_text = req.new_text if req.new_text is not None and req.new_text.strip() else original_text
 
     with db_connect() as conn:
-        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT cwd, remote_session_id, remote_ready, runtime_origin, workspace_mode,
+                   native_user_offset
+            FROM sessions WHERE id = ?
+            """,
+            (session_id,),
+        ).fetchone()
     cwd = row["cwd"] if row else os.path.expanduser("~")
 
-    await _discard_warm_session(session_id)
+    native_fork_id = ""
+    native_fork = False
+    runtime_origin = normalize_runtime_origin(row["runtime_origin"] if row else "")
+    source_native_offset = int(row["native_user_offset"] or 0) if row else 0
+    native_source_id = ((row["remote_session_id"] or "").strip() if row else "")
+    if row and row["workspace_mode"] == "code" and runtime_origin == _RUNTIME_ORIGIN_AGENT_SDK and row["remote_ready"]:
+        if not _claude_agent_bridge.enabled or not await _claude_agent_bridge.ensure_started():
+            raise HTTPException(status_code=503, detail=_claude_agent_bridge.last_error or "Claude Agent SDK is unavailable")
+        try:
+            transcript = await _claude_agent_bridge.session_messages(native_source_id, cwd=cwd)
+            plain_user_seen = -1
+            anchor_id = ""
+            for message in transcript:
+                message_type = str(message.get("type") or "")
+                content = (message.get("message") or {}).get("content") if isinstance(message.get("message"), dict) else []
+                is_tool_result = message_type == "user" and isinstance(content, list) and any(
+                    isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+                )
+                if message_type == "user" and not is_tool_result:
+                    plain_user_seen += 1
+                    if plain_user_seen == source_native_offset + req.event_index:
+                        break
+                message_id = str(message.get("uuid") or "").strip()
+                if message_id:
+                    anchor_id = message_id
+            if source_native_offset + req.event_index > 0 and not anchor_id:
+                raise AgentSdkBridgeError("Unable to locate the native edit point in the Claude transcript")
+            if anchor_id:
+                forked = await _claude_agent_bridge.fork_session(
+                    native_source_id,
+                    cwd=cwd,
+                    up_to_message_id=anchor_id,
+                    title=f"Edited {session_id[:8]}",
+                )
+                native_fork_id = str(forked.get("sessionId") or "").strip()
+                if not native_fork_id:
+                    raise AgentSdkBridgeError("Claude Agent SDK returned no edited session id")
+                native_fork = True
+        except (AgentSdkBridgeError, asyncio.TimeoutError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    await _discard_session_runtime(session_id)
+    await discard_event_checkpoints(events[target_pos:], cwd)
     save_events(session_id, events_before)
     upsert_session(session_id, derive_title(new_text), cwd)
-    set_session_remote_state(session_id, str(uuid.uuid4()), False)
+    if native_fork:
+        set_session_remote_state(session_id, native_fork_id, True)
+        set_session_runtime_origin(session_id, _RUNTIME_ORIGIN_AGENT_SDK)
+        set_session_native_user_offset(session_id, source_native_offset)
+    else:
+        set_session_remote_state(session_id, str(uuid.uuid4()), False)
+        set_session_runtime_origin(session_id, "")
+        set_session_native_user_offset(session_id, 0)
 
     context = format_context_snippet(events_before)
-    if context:
+    if native_fork:
+        packed_message = new_text
+    elif context:
         packed_message = (
             "【以下是之前的对话历史，仅作为参考上下文（不要重复回应历史问题）】\n"
             f"{context}\n\n"
@@ -5591,12 +6953,16 @@ async def prepare_inline_edit(request: Request, session_id: str, req: ForkReques
         "sent_message": packed_message,
         "display_message": new_text,
         "images": original_images,
+        "native_fork": native_fork,
+        "remote_session_id": native_fork_id or None,
     }
 
 
 @app.post("/api/sessions/{session_id}/restore-checkpoint")
 async def restore_checkpoint(request: Request, session_id: str, req: RestoreRequest):
     _require_not_mobile_access(request)
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
     events = load_events(session_id)
     user_event_positions = [i for i, e in enumerate(events) if e.get("type") == "user_input"]
     if req.event_index < 0 or req.event_index >= len(user_event_positions):
@@ -5612,6 +6978,8 @@ async def restore_checkpoint(request: Request, session_id: str, req: RestoreRequ
     if not cwd:
         raise HTTPException(status_code=400, detail="session has no cwd")
 
+    # Dispose an idle native/CLI runtime before changing files underneath it.
+    await _discard_session_runtime(session_id)
     ok = await restore_git_checkpoint(cwd, cp)
     if not ok:
         raise HTTPException(status_code=500, detail="restore failed")
@@ -6078,6 +7446,8 @@ def _row_to_session(r: sqlite3.Row) -> dict:
         "archived": bool(r["archived"]),
         "tags": tags,
         "workspace_mode": (r["workspace_mode"] or "chat") if "workspace_mode" in r.keys() else "chat",
+        "runtime_origin": normalize_runtime_origin(r["runtime_origin"]) if "runtime_origin" in r.keys() else "",
+        "native_user_offset": int(r["native_user_offset"] or 0) if "native_user_offset" in r.keys() else 0,
     }
 
 
@@ -6558,7 +7928,11 @@ async def prompt_optimizer_feedback(req: PromptOptimizerFeedbackRequest):
 async def get_session(session_id: str):
     with db_connect() as conn:
         row = conn.execute(
-            "SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags, workspace_mode FROM sessions WHERE id = ?",
+            """
+            SELECT id, title, cwd, created_at, updated_at, pinned, archived, tags,
+                   workspace_mode, runtime_origin, native_user_offset
+            FROM sessions WHERE id = ?
+            """,
             (session_id,),
         ).fetchone()
     if row is None:
@@ -6699,15 +8073,18 @@ async def patch_session(request: Request, session_id: str, req: SessionPatch):
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(request: Request, session_id: str):
     _require_not_mobile_access(request)
-    if session_id in _running_processes or session_id in _compacting_sessions:
+    if _session_control_busy(session_id):
         raise HTTPException(status_code=409, detail="session is busy")
-    await _discard_warm_session(session_id)
+    await _discard_session_runtime(session_id)
+    events = load_events(session_id)
     with db_connect() as conn:
+        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         conn.execute("DELETE FROM session_usage WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM tool_calls WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM message_feedback WHERE session_id = ?", (session_id,))
         conn.execute("DELETE FROM memories WHERE scope = ?", (f"session:{session_id}",))
+    await discard_event_checkpoints(events, row["cwd"] if row else "")
     path = HISTORY_DIR / f"{session_id}.jsonl"
     if path.exists():
         path.unlink()
@@ -6719,12 +8096,24 @@ async def delete_session(request: Request, session_id: str):
 @app.post("/api/sessions/{session_id}/clear")
 async def clear_session(request: Request, session_id: str):
     _require_not_mobile_access(request)
-    if session_id in _running_processes or session_id in _compacting_sessions:
+    if _session_control_busy(session_id):
         raise HTTPException(status_code=409, detail="session is busy")
-    await _discard_warm_session(session_id)
+    await _discard_session_runtime(session_id)
+    events = load_events(session_id)
+    with db_connect() as conn:
+        row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    await discard_event_checkpoints(events, row["cwd"] if row else "")
     save_events(session_id, [])
     with db_connect() as conn:
-        conn.execute("UPDATE sessions SET title = '新会话', manual_title = 0, updated_at = ? WHERE id = ?", (time.time(), session_id))
+        conn.execute(
+            """
+            UPDATE sessions
+            SET title = '新会话', manual_title = 0, runtime_origin = '',
+                native_user_offset = 0, updated_at = ?
+            WHERE id = ?
+            """,
+            (time.time(), session_id),
+        )
     set_session_remote_state(session_id, "", False)
     return {"ok": True}
 
@@ -6732,7 +8121,14 @@ async def clear_session(request: Request, session_id: str):
 @app.post("/api/sessions/{session_id}/compact")
 async def compact_session(request: Request, session_id: str, keep_last: int = Query(default=2, ge=1, le=10)):
     _require_not_mobile_access(request)
-    if session_id in _running_processes or session_id in _compacting_sessions:
+    with db_connect() as conn:
+        row = conn.execute("SELECT workspace_mode FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is not None and (row["workspace_mode"] or "chat") == "code":
+        raise HTTPException(
+            status_code=409,
+            detail="Code sessions use the dedicated Claude Agent SDK native compact endpoint",
+        )
+    if _session_control_busy(session_id):
         raise HTTPException(status_code=409, detail="session is busy")
     _compacting_sessions.add(session_id)
     try:
@@ -6746,11 +8142,14 @@ async def compact_session(request: Request, session_id: str, keep_last: int = Qu
 
         split_at = user_indices[-keep_last]
         old_events, new_events = events[:split_at], events[split_at:]
-        snippet = format_context_snippet(old_events, max_chars=12000)
+        snippet = format_light_context_snippet(old_events, max_chars=16000)
         summary_prompt = (
-            "请把以下对话历史压缩成一份延续工作所需的精简摘要，"
-            "覆盖：目标、关键决策、已修改文件、未完成工作、风险与约定。"
-            "用 markdown 列表，不超过 30 行。\n\n"
+            "请把以下 Chat/旧版 CLI 会话记录压缩成一份可继续工作的精简记忆。\n"
+            "必须保留：当前目标、用户明确要求、关键决策、已修改文件及修改目的、"
+            "验证结果、未完成工作、风险与约定。\n"
+            "工具调用按结果合并，不复述流水账；文件读取只保留路径、必要行号和关键结论；"
+            "diff 只保留文件、状态和修改目的；不要保留或推测思考过程。\n"
+            "使用简洁 markdown，最多 40 行。\n\n"
             + snippet
         )
         proc = await asyncio.create_subprocess_exec(
@@ -6769,7 +8168,7 @@ async def compact_session(request: Request, session_id: str, keep_last: int = Qu
         if not summary:
             raise HTTPException(status_code=500, detail="empty summary")
 
-        await _discard_warm_session(session_id)
+        await _discard_session_runtime(session_id)
         src = HISTORY_DIR / f"{session_id}.jsonl"
         backup_name = ""
         if src.exists():
@@ -6784,10 +8183,17 @@ async def compact_session(request: Request, session_id: str, keep_last: int = Qu
                 "text": f"【会话已压缩 · 以下为之前对话的摘要】\n\n{summary}",
                 "ts": time.time(),
                 "compacted": True,
+                "remote_detached": True,
+                "context_strategy": "light-v1",
             }
         ] + new_events
+        with db_connect() as conn:
+            session_row = conn.execute("SELECT cwd FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        await discard_event_checkpoints(old_events, session_row["cwd"] if session_row else "")
         save_events(session_id, compacted)
-        set_session_remote_state(session_id, "", False)
+        set_session_remote_state(session_id, str(uuid.uuid4()), False)
+        set_session_runtime_origin(session_id, "")
+        set_session_native_user_offset(session_id, 0)
         return {"ok": True, "kept_turns": keep_last, "backup": backup_name}
     except ClaudeCliResolutionError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -8511,7 +9917,114 @@ async def get_version():
 
 @app.get("/api/runtime")
 async def runtime_status():
-    return {"root_or_sudo": _running_with_root_or_sudo_privileges()}
+    return {
+        "root_or_sudo": _running_with_root_or_sudo_privileges(),
+        "code_runtime": (
+            "claude_agent_sdk"
+            if _claude_agent_bridge.running
+            else ("claude_cli_explicit" if not _claude_agent_bridge.enabled else "claude_agent_sdk_unavailable")
+        ),
+        "claude_agent_sdk": _claude_agent_bridge.status(),
+    }
+
+
+def _agent_sdk_management_status() -> dict:
+    return agent_sdk_status_payload(
+        _claude_agent_bridge.sdk_info,
+        running=_claude_agent_bridge.running,
+        error=_claude_agent_bridge.last_error,
+    )
+
+
+@app.get("/api/agent-sdk/status")
+async def agent_sdk_install_status(request: Request):
+    return {**_agent_sdk_management_status(), "local": _is_local_request(request)}
+
+
+@app.post("/api/agent-sdk/install")
+async def install_agent_sdk(request: Request):
+    if not _is_local_request(request):
+        raise HTTPException(status_code=403, detail="Agent SDK installation is allowed only from localhost")
+    if _agent_sdk_install_lock.locked():
+        raise HTTPException(status_code=409, detail="Agent SDK installation is already running")
+    if (
+        _running_processes
+        or _agent_sdk_running_sessions
+        or _compacting_sessions
+        or any(job.status == "running" for job in _agent_loop_jobs.values())
+    ):
+        raise HTTPException(status_code=409, detail="stop all active Code turns before installing the Agent SDK")
+
+    async with _agent_sdk_install_lock:
+        staging: Optional[Path] = None
+        backup: Optional[Path] = None
+        bridge_stopped = False
+        activated = False
+        try:
+            installed = await install_pinned()
+            staging = Path(installed["staging"])
+            await _claude_agent_bridge.shutdown()
+            bridge_stopped = True
+            backup = activate_staging(staging)
+            activated = True
+            staging = None
+            if _claude_agent_bridge.enabled and not await _claude_agent_bridge.ensure_started():
+                error = _claude_agent_bridge.last_error or "installed SDK failed to start"
+                await _claude_agent_bridge.shutdown()
+                rollback_activation(backup)
+                activated = False
+                backup = None
+                await _claude_agent_bridge.ensure_started()
+                raise AgentSdkInstallError(error)
+            response = {
+                "ok": True,
+                "message": "Claude Agent SDK installed and activated",
+                **_agent_sdk_management_status(),
+            }
+            discard_backup(backup)
+            backup = None
+            activated = False
+            return response
+        except asyncio.CancelledError:
+            if activated:
+                await _claude_agent_bridge.shutdown()
+                rollback_activation(backup)
+                activated = False
+                backup = None
+            if bridge_stopped and _claude_agent_bridge.enabled:
+                await _claude_agent_bridge.ensure_started()
+            raise
+        except AgentSdkInstallError as exc:
+            if activated:
+                await _claude_agent_bridge.shutdown()
+                rollback_activation(backup)
+                activated = False
+                backup = None
+            if bridge_stopped and _claude_agent_bridge.enabled:
+                await _claude_agent_bridge.ensure_started()
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except OSError as exc:
+            if activated:
+                await _claude_agent_bridge.shutdown()
+                rollback_activation(backup)
+                activated = False
+                backup = None
+            if bridge_stopped and _claude_agent_bridge.enabled:
+                await _claude_agent_bridge.ensure_started()
+            raise HTTPException(status_code=500, detail=f"failed to activate Agent SDK: {exc}") from exc
+        except Exception as exc:
+            if activated:
+                await _claude_agent_bridge.shutdown()
+                rollback_activation(backup)
+                activated = False
+                backup = None
+            if bridge_stopped and _claude_agent_bridge.enabled:
+                await _claude_agent_bridge.ensure_started()
+            raise HTTPException(status_code=500, detail=f"unexpected Agent SDK installation failure: {exc}") from exc
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+            discard_backup(backup)
 
 
 @app.get("/api/update-check")
@@ -8602,6 +10115,7 @@ def main():
     parser.add_argument("--version", "-v", action="store_true", help="Show version")
     parser.add_argument("--extension-path", action="store_true", help="Print bundled Chrome extension directory and exit")
     parser.add_argument("--skip-cli-check", action="store_true", help="Skip claude CLI availability check on startup")
+    parser.add_argument("--setup-totp", action="store_true", help="Generate a TOTP secret and verify it in the terminal")
     args = parser.parse_args()
 
     if args.version:
@@ -8616,22 +10130,41 @@ def main():
         print(path)
         return
 
+    if args.setup_totp:
+        _cli_setup_totp()
+        return
+
     print(f"Claude Code Web v{__version__}")
     print(f"  → http://{args.host}:{args.port}")
     print(f"  → Data: {_DATA_DIR}")
 
     if not args.skip_cli_check:
-        claude_version = _check_claude_cli()
-        if claude_version is None:
-            print()
-            print("  ✗ claude CLI not found in PATH", file=sys.stderr)
-            print("    claude-web wraps the Claude Code CLI — install it first:", file=sys.stderr)
-            print("      npm install -g @anthropic-ai/claude-code", file=sys.stderr)
-            print("    Then run `claude` once to log in. Docs: https://docs.claude.com/claude-code", file=sys.stderr)
-            print("    (Use --skip-cli-check to bypass this check.)", file=sys.stderr)
-            print()
-            sys.exit(1)
-        print(f"  → Claude CLI: {claude_version}")
+        if _claude_agent_bridge.enabled:
+            sdk_status = _agent_sdk_management_status()
+            installed = sdk_status.get("installed_version") or "not installed"
+            print(f"  → Code runtime: Claude Agent SDK (locked {sdk_status['required_version']}, managed {installed})")
+            if not sdk_status.get("node_compatible"):
+                print(
+                    f"  ⚠️  Node.js 18+ is required; found {sdk_status.get('node_version') or 'no usable Node.js'}.",
+                    file=sys.stderr,
+                )
+            elif not sdk_status.get("installed_compatible"):
+                print("  → Install/repair the locked SDK from Settings → General after startup.")
+            # The global CLI is optional in native SDK mode. It is intentionally
+            # not used as an implicit fallback when the SDK is unavailable.
+            claude_version = _check_claude_cli()
+            if claude_version is not None:
+                print(f"  → Optional global Claude CLI: {claude_version}")
+        else:
+            claude_version = _check_claude_cli()
+            if claude_version is None:
+                print()
+                print("  ✗ CLAUDE_WEB_CODE_RUNTIME=cli requires Claude CLI in PATH", file=sys.stderr)
+                print("      npm install -g @anthropic-ai/claude-code", file=sys.stderr)
+                print("    Then run `claude` once to log in.", file=sys.stderr)
+                print()
+                sys.exit(1)
+            print(f"  → Code runtime: explicit Claude CLI {claude_version}")
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
     if args.host not in _LOCAL_HOSTS:

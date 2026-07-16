@@ -4,6 +4,26 @@
 
 当前稳定版本：`2.0.2`。
 
+## Unreleased
+
+- **FEATURE** Code 模式切换为 Claude Agent SDK 原生持久会话：常驻 Query 只接收本轮新消息，复用原生 Session ID，并直接转发 Claude 的流式事件、工具、Hooks、Skills、MCP、usage 和 compact 状态
+- **FEATURE** 新增 Claude-only Node NDJSON bridge，支持多会话持久 runtime、原生 interrupt、上下文查询和会话释放，不包含 Codex SDK
+- **FIX** 建立严格 runtime ownership：SDK / CLI owner 持久化到会话，失败时禁止隐式回退，旧 CLI 会话、CLI 导入和漏传 `workspace_mode` 都不会串线
+- **FIX** Code 上下文圆环接通 SDK 真实 `getContextUsage()`；直接使用动态 `totalTokens / maxTokens`，本地模型返回 200k 或 1M 都会同步显示，圆环按剩余比例缩小
+- **FEATURE** Code 手动与高水位压缩改为 Claude Code 原生 `/compact`，保持原 Session ID，并消费 `compact_boundary` 的压缩前后 Token；普通聊天仍保留本地摘要路径
+- **FEATURE** 搬入 ccgui 风格的 `PreToolUse` 权限策略，并接通 Web 运行中审批：允许一次、本会话始终允许、拒绝和 AskUserQuestion 回答都会恢复同一个 SDK turn
+- **FEATURE** claude-web 建立自己的 Agent SDK 安装机制：独立用户目录、精确 `package-lock`、临时校验、原子切换、启动失败回滚和设置页显式升级；ccgui 安装只作为迁移兼容
+- **FIX** Git checkpoint v2 保存 tracked、staged 和 untracked 全部状态，以专用 Git ref 防 GC；禁止运行中回滚，并在恢复失败时事务式恢复点击时现场
+- **REFACTOR** `claude_web/server.py` 成为唯一后端实现，根目录 `server.py` 只保留兼容启动转发
+- **FEATURE** 已通过访问码或 Authenticator 认证的远程设备现在可使用与电脑端相同的工具权限、Agent Loop 测试命令和自动模式；Code 模式默认使用 `bypassPermissions`
+- **SECURITY** 高权限开放后仅回环地址免登录；局域网、私网代理和公网客户端都必须先完成设备认证，管理功能仍限制在电脑本机
+- **FEATURE** 明确 Code「轻上下文」只使用 Claude Agent SDK 原生会话与原生 compact；工具结果、diff 和思考的折叠仅是 UI 展示策略，不再自定义筛选后喂回模型
+- **FEATURE** 设置页新增「轻上下文模式」「工具结果默认折叠」「思考过程默认展开」「上下文高水位提醒」四项偏好，均使用本地持久化
+- **FIX** 浏览器刷新、切换网络或 SSE 断开后不再中止原生 Code turn；后端继续 drain 并持久化事件，页面重连会恢复运行状态与未处理的 Web 权限审批
+- **FEATURE** Code 会话接通 SDK 原生 `setModel()`、`setPermissionMode()`、`forkSession()` 与 `rewindFiles()`；历史重试和编辑复用原生分叉，并持久化本地/原生消息偏移，避免回滚错轮次
+- **FIX** Agent Loop 的 Token 预算改为“新增提示 + 模型输出”，不再把已有 200k/1M 上下文和 cache read 每轮重复计费
+- **FIX** Node bridge 对同时存活的 Claude Query 设置 8 个硬上限，创建与占用原子化；满载时返回明确的 429，不再因并发竞态无限增长
+
 ## v2.0.2 - 2026-07-13
 
 - **FIX** Code 工作区权限体验重做：默认使用全工具白名单，Bash、文件读写、搜索、Task、Notebook 等 Claude Code 常用工具不再频繁卡在「允许并重试」
@@ -11,7 +31,7 @@
 - **FIX** root / sudo 环境选择自动模式时改用 `acceptEdits + 工具白名单` 兼容运行，避免 Claude CLI 的 root 硬限制直接中断任务
 - **FEATURE** Code 模式默认开启思考过程并发送中等推理强度；用户仍可在设置里关闭思考显示 / 发送或选择更高推理强度
 - **FIX** 修改文件摘要只在本轮确实触发写入工具后显示，减少只读分析时误报文件改动
-- **FIX** Code 模式上下文显示改为 1M 级别估算，不再自动压缩打断任务；需要时可手动输入 `/compact`
+- **FIX** 当时的 Code 模式上下文显示改为 1M 级别估算，并暂停自动压缩；此估算方案已在 Unreleased 中被 SDK 真实 `getContextUsage()` 与原生 compact 取代
 
 ## v2.0.1 - 2026-07-12
 
