@@ -17,6 +17,8 @@ class RuntimeOwnershipTest(unittest.IsolatedAsyncioTestCase):
     def _cleanup_session(self, session_id):
         server._agent_sdk_running_sessions.discard(session_id)
         server._agent_sdk_detached_turn_tasks.pop(session_id, None)
+        server._code_validation_processes.pop(session_id, None)
+        server._code_validation_stop_requests.discard(session_id)
         server.save_events(session_id, [])
         with server.db_connect() as conn:
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -67,6 +69,17 @@ class RuntimeOwnershipTest(unittest.IsolatedAsyncioTestCase):
         # newly submitted tokens; the 380k existing/cache input is not charged.
         self.assertEqual(324, server._agent_loop_usage_total(usage, "abcd中文"))
 
+    async def test_validation_autodetect_falls_back_to_stdlib_unittest(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = server.Path(temp_dir)
+            (root / "pyproject.toml").write_text("[project]\nname='sample'\n", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_sample.py").write_text("import unittest\n", encoding="utf-8")
+            with patch.object(server.shutil, "which", return_value=None):
+                command, source = server._agent_loop_detect_test_command(temp_dir)
+            self.assertIn("-m unittest discover -s tests", command)
+            self.assertEqual("unittest project", source)
+
     async def test_native_rewind_applies_persisted_fork_offset(self):
         session_id = "native-offset-" + uuid.uuid4().hex
         cwd = tempfile.gettempdir() + "/native-offset-project"
@@ -92,10 +105,114 @@ class RuntimeOwnershipTest(unittest.IsolatedAsyncioTestCase):
                     ) as rewind:
                 result = await server.rewind_agent_sdk_files(
                     session_id,
-                    server.NativeRewindRequest(event_index=1),
+                    server.NativeRewindRequest(event_index=1, dry_run=True),
                 )
             self.assertTrue(result["ok"])
             self.assertEqual("0000000000000003", rewind.await_args.args[1])
+            self.assertEqual([], server.load_events(session_id))
+
+            with patch.object(server._claude_agent_bridge, "ensure_started", AsyncMock(return_value=True)), \
+                    patch.object(server._claude_agent_bridge, "session_messages", AsyncMock(return_value=transcript)), \
+                    patch.object(
+                        server._claude_agent_bridge,
+                        "rewind_files",
+                        AsyncMock(return_value={"result": {"canRewind": True, "filesChanged": ["tracked.txt"]}}),
+                    ):
+                applied = await server.rewind_agent_sdk_files(
+                    session_id,
+                    server.NativeRewindRequest(event_index=1, dry_run=False),
+                )
+            self.assertEqual("code_rewind", applied["rewind_event"]["type"])
+            self.assertEqual("code_rewind", server.load_events(session_id)[0]["type"])
+        finally:
+            self._cleanup_session(session_id)
+
+    async def test_manual_validation_is_sdk_code_only_and_owns_runtime(self):
+        session_id = "validation-owner-" + uuid.uuid4().hex
+        cwd = tempfile.gettempdir() + "/validation-project"
+        server.upsert_session(session_id, "validation", cwd, "code")
+        server.set_session_runtime_origin(session_id, server._RUNTIME_ORIGIN_AGENT_SDK)
+
+        async def fake_validation(command, actual_cwd, timeout, on_process=None):
+            self.assertEqual("npm test", command)
+            self.assertEqual(cwd, actual_cwd)
+            self.assertTrue(server._session_control_busy(session_id))
+            return {
+                "command": command,
+                "returncode": 0,
+                "stdout": "ok",
+                "stderr": "",
+                "timed_out": False,
+                "duration_ms": 12,
+            }
+
+        try:
+            with patch.object(server, "_run_validation_command", side_effect=fake_validation):
+                result = await server.validate_code_session(
+                    session_id,
+                    server.CodeValidationRequest(command="npm test", timeout=30),
+                )
+            self.assertTrue(result["ok"])
+            self.assertEqual("code_validation", result["event"]["type"])
+            self.assertNotIn(session_id, server._code_validation_processes)
+            self.assertEqual("code_validation", server.load_events(session_id)[0]["type"])
+        finally:
+            self._cleanup_session(session_id)
+
+    async def test_manual_validation_rejects_chat_session(self):
+        session_id = "validation-chat-" + uuid.uuid4().hex
+        server.upsert_session(session_id, "chat", os.path.expanduser("~"), "chat")
+        try:
+            with self.assertRaises(HTTPException) as raised:
+                await server.validate_code_session(
+                    session_id,
+                    server.CodeValidationRequest(command="true"),
+                )
+            self.assertEqual(409, raised.exception.status_code)
+        finally:
+            self._cleanup_session(session_id)
+
+    async def test_validation_stop_request_before_process_spawn_is_honored(self):
+        session_id = "validation-stop-race-" + uuid.uuid4().hex
+        cwd = tempfile.gettempdir() + "/validation-stop-race-project"
+        server.upsert_session(session_id, "validation stop", cwd, "code")
+        server.set_session_runtime_origin(session_id, server._RUNTIME_ORIGIN_AGENT_SDK)
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.terminated = False
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+        process = FakeProcess()
+
+        async def fake_validation(command, actual_cwd, timeout, on_process=None):
+            stopped = await server.stop_chat(session_id)
+            self.assertEqual("code_validation", stopped["runtime"])
+            self.assertIsNone(server._code_validation_processes[session_id])
+            on_process(process)
+            self.assertTrue(process.terminated)
+            return {
+                "command": command,
+                "returncode": process.returncode,
+                "stdout": "",
+                "stderr": "stopped",
+                "timed_out": False,
+                "duration_ms": 1,
+            }
+
+        try:
+            with patch.object(server, "_run_validation_command", side_effect=fake_validation):
+                result = await server.validate_code_session(
+                    session_id,
+                    server.CodeValidationRequest(command="npm test"),
+                )
+            self.assertEqual(-15, result["event"]["returncode"])
+            self.assertNotIn(session_id, server._code_validation_processes)
+            self.assertNotIn(session_id, server._code_validation_stop_requests)
         finally:
             self._cleanup_session(session_id)
 

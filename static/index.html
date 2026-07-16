@@ -1237,6 +1237,111 @@
   .settings-btn.primary { background: #2f2c29; border-color: #2f2c29; color: #fff; }
   .settings-btn.primary:hover { background: #1f1d1b; border-color: #1f1d1b; transform: translateY(-1px); }
   .settings-btn:disabled { opacity: .5; cursor: not-allowed; }
+  .agent-sdk-card {
+    padding: 15px;
+    border: 1px solid #e7e0d8;
+    border-radius: 14px;
+    background: linear-gradient(145deg, #fff 0%, #fbf9f7 100%);
+    box-shadow: 0 1px 2px rgba(47, 40, 34, .025);
+  }
+  .agent-sdk-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 16px;
+  }
+  .agent-sdk-details { min-width: 0; }
+  .agent-sdk-heading {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+  }
+  .agent-sdk-mark {
+    width: 32px;
+    height: 32px;
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #eadfd7;
+    border-radius: 10px;
+    background: #fff;
+    color: #b65b34;
+    box-shadow: 0 1px 2px rgba(47, 40, 34, .04);
+  }
+  .agent-sdk-mark svg { width: 16px; height: 16px; }
+  .agent-sdk-status-line {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .agent-sdk-status-indicator {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #a8a29e;
+    box-shadow: 0 0 0 3px rgba(168, 162, 158, .13);
+  }
+  .agent-sdk-card[data-status="ready"] .agent-sdk-status-indicator {
+    background: #3f9b68;
+    box-shadow: 0 0 0 3px rgba(63, 155, 104, .13);
+  }
+  .agent-sdk-card[data-status="attention"] .agent-sdk-status-indicator {
+    background: #d08a31;
+    box-shadow: 0 0 0 3px rgba(208, 138, 49, .14);
+  }
+  .agent-sdk-card[data-status="error"] .agent-sdk-status-indicator {
+    background: #cf5148;
+    box-shadow: 0 0 0 3px rgba(207, 81, 72, .13);
+  }
+  .agent-sdk-status {
+    min-width: 0;
+    margin: 0;
+    color: #756e67;
+  }
+  .agent-sdk-card[data-status="attention"] .agent-sdk-status,
+  .agent-sdk-card[data-status="error"] .agent-sdk-status { color: #a9443d; }
+  .agent-sdk-path {
+    margin: 10px 0 0 42px;
+    padding: 7px 9px;
+    border: 1px solid #ece6e0;
+    border-radius: 9px;
+    background: rgba(255, 255, 255, .72);
+    color: #8a827a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .agent-sdk-action.settings-btn {
+    min-height: 40px;
+    flex: 0 0 auto;
+    padding: 0 14px;
+    border-color: #332f2b;
+    border-radius: 10px;
+    background: #332f2b;
+    color: #fff;
+    font-weight: 700;
+    white-space: nowrap;
+    box-shadow: 0 2px 5px rgba(47, 40, 34, .14);
+  }
+  .agent-sdk-action.settings-btn:hover:not(:disabled) {
+    border-color: #201e1c;
+    background: #201e1c;
+    box-shadow: 0 4px 9px rgba(47, 40, 34, .16);
+    transform: translateY(-1px);
+  }
+  .agent-sdk-action-icon { width: 15px; height: 15px; flex: 0 0 auto; }
+  .agent-sdk-action.is-loading .agent-sdk-action-icon { animation: agentSdkSpin .8s linear infinite; }
+  @keyframes agentSdkSpin { to { transform: rotate(360deg); } }
+  .agent-sdk-description {
+    margin-top: 13px;
+    padding-top: 12px;
+    border-top: 1px solid #eee8e2;
+  }
   .settings-tab:focus-visible,
   .settings-btn:focus-visible,
   .settings-close:focus-visible {
@@ -1373,6 +1478,9 @@
     .settings-token-row .grow { min-width: 0; }
     .context-preference-row { min-height: 68px; }
     .sidebar-footer-action { min-width: 44px; min-height: 44px; }
+    .agent-sdk-main { grid-template-columns: 1fr; gap: 13px; }
+    .agent-sdk-action.settings-btn { width: 100%; min-height: 44px; }
+    .agent-sdk-path { margin-left: 0; }
   }
 
   /* ===== Prompt optimizer ===== */
@@ -5522,6 +5630,283 @@
   .git-diff-line.remove { background:rgba(181,66,63,.20); color:#f0b7b4; }
   .git-diff-line.hunk { color:#a7bfe8; background:rgba(77,105,156,.16); }
   .git-diff-line.meta { color:#d8b879; }
+  .git-diff-line .hljs { display:inline; padding:0; background:transparent; color:inherit; }
+  .git-diff-prefix { display:inline-block; width:16px; user-select:none; opacity:.72; }
+  .cw-changed-file-review {
+    border-bottom:1px solid color-mix(in srgb,var(--border) 68%,transparent);
+  }
+  .cw-changed-file-review:last-child { border-bottom:0; }
+  .cw-changed-file-review > summary { list-style:none; }
+  .cw-changed-file-review > summary::-webkit-details-marker { display:none; }
+  .cw-changed-file-review > summary.cw-changed-file { border-bottom:0; }
+  .cw-changed-file-review[open] > summary.cw-changed-file { background:var(--surface-2); }
+  .cw-changed-file-review[open] > summary.cw-changed-file > svg { transform:rotate(90deg); }
+  .cw-changed-file-review > summary.cw-changed-file > svg { transition:transform .16s ease; }
+  .cw-inline-git-diff {
+    overflow:hidden;
+    border-top:1px solid var(--border);
+    background:#1d1f21;
+  }
+  .cw-inline-git-diff .git-diff-content {
+    max-height:420px;
+    padding:10px 0;
+    font-size:11.5px;
+  }
+  .cw-inline-review-actions {
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:flex-end;
+    gap:7px;
+    padding:9px 10px;
+    border-top:1px solid rgba(255,255,255,.09);
+    background:#232528;
+  }
+  .cw-inline-review-state { margin-right:auto; color:#b9b4ad; font-size:11px; }
+  .cw-inline-review-state.kept { color:#91d2aa; }
+  .cw-inline-review-state.reverted { color:#efaaa6; }
+  .cw-inline-review-actions .cw-review-btn { border-color:#51555b; background:#2c2f33; color:#eeeae5; }
+  .cw-inline-review-actions .cw-review-btn.primary { border-color:#397956; background:#315e46; color:#f5fff8; }
+  .cw-inline-review-actions .cw-review-btn.danger { border-color:#8a4541; color:#ffc6c2; }
+
+  /* ===== Code review loop: diff / keep / rewind / validate ===== */
+  .cw-code-diff {
+    overflow:hidden;
+    border:1px solid var(--border);
+    border-radius:10px;
+    background:var(--surface);
+  }
+  .cw-code-diff + .cw-code-diff { margin-top:10px; }
+  .cw-code-diff-head {
+    display:flex;
+    align-items:center;
+    gap:8px;
+    min-height:38px;
+    padding:0 10px;
+    border-bottom:1px solid var(--border);
+    background:var(--surface-2);
+    color:var(--text-muted);
+    font-size:11.5px;
+  }
+  .cw-code-diff-head code {
+    min-width:0;
+    overflow:hidden;
+    color:var(--text);
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .cw-code-diff-stats { margin-left:auto; display:flex; gap:6px; font-variant-numeric:tabular-nums; }
+  .cw-code-diff-add { color:#16834a; }
+  .cw-code-diff-del { color:#c4423d; }
+  .cw-code-diff-body {
+    overflow-x:auto;
+    background:#fbfbfa;
+    color:#282522;
+    font:11.5px/1.55 'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  :root.dark .cw-code-diff-body { background:#171513; color:#e7e2dc; }
+  .cw-code-diff-row {
+    display:grid;
+    grid-template-columns:44px 44px 22px minmax(max-content,1fr);
+    min-height:19px;
+  }
+  .cw-code-diff-row.add { background:rgba(41,148,84,.13); }
+  .cw-code-diff-row.remove { background:rgba(207,67,62,.13); }
+  .cw-code-diff-ln {
+    padding:0 7px;
+    border-right:1px solid color-mix(in srgb,var(--border) 75%,transparent);
+    color:var(--text-subtle);
+    text-align:right;
+    user-select:none;
+    font-variant-numeric:tabular-nums;
+  }
+  .cw-code-diff-glyph { text-align:center; color:var(--text-subtle); user-select:none; }
+  .cw-code-diff-row.add .cw-code-diff-glyph { color:#16834a; }
+  .cw-code-diff-row.remove .cw-code-diff-glyph { color:#c4423d; }
+  .cw-code-diff-code { min-width:100%; padding:0 10px 0 2px; white-space:pre; }
+  .cw-code-diff-code .hljs { display:inline; padding:0; background:transparent; color:inherit; }
+  .cw-code-diff-fold { border-block:1px solid color-mix(in srgb,var(--border) 72%,transparent); }
+  .cw-code-diff-fold > button {
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    width:100%;
+    min-height:32px;
+    border:0;
+    background:color-mix(in srgb,var(--surface-2) 78%,transparent);
+    color:var(--text-muted);
+    cursor:pointer;
+    font:11px/1.3 inherit;
+  }
+  .cw-code-diff-fold > button:hover,
+  .cw-code-diff-fold > button:focus-visible { background:var(--surface-2); color:var(--text); outline:none; }
+  .cw-code-diff-fold-lines.hidden { display:none; }
+  .cw-code-diff-empty { padding:12px; color:var(--text-subtle); font-size:12px; }
+
+  .cw-file-context-chips {
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    padding:9px 11px 0;
+  }
+  .cw-file-context-chips.hidden,
+  body:not(.code-mode) .cw-file-context-chips { display:none !important; }
+  .cw-file-context-chip {
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    max-width:min(320px,100%);
+    min-height:30px;
+    padding:0 7px 0 9px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--surface-2);
+    color:var(--text-muted);
+    font:11px/1.2 'JetBrains Mono',ui-monospace,monospace;
+  }
+  .cw-file-context-chip svg { width:14px; height:14px; flex:0 0 14px; }
+  .cw-file-context-chip span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .cw-file-context-chip button {
+    display:grid;
+    width:24px;
+    height:24px;
+    place-items:center;
+    border:0;
+    border-radius:6px;
+    background:transparent;
+    color:var(--text-subtle);
+    cursor:pointer;
+  }
+  .cw-file-context-chip button:hover,
+  .cw-file-context-chip button:focus-visible { background:var(--border); color:var(--text); outline:none; }
+
+  .cw-inline-rewind {
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    min-height:34px;
+    margin-top:6px;
+    padding:0 9px;
+    border:1px solid var(--border);
+    border-radius:9px;
+    background:color-mix(in srgb,var(--surface) 82%,transparent);
+    color:var(--text-muted);
+    cursor:pointer;
+    font:11.5px/1.2 inherit;
+  }
+  .cw-inline-rewind svg { width:14px; height:14px; }
+  .cw-inline-rewind:hover,
+  .cw-inline-rewind:focus-visible { border-color:var(--border-strong); background:var(--surface-2); color:var(--text); outline:none; }
+  body:not(.code-mode) .cw-inline-rewind { display:none !important; }
+
+  .cw-code-review-box,
+  .cw-rewind-preview-box {
+    display:flex;
+    width:min(860px,calc(100vw - 36px));
+    max-width:860px !important;
+    max-height:min(780px,calc(100dvh - 40px));
+    flex-direction:column;
+    padding:0 !important;
+    overflow:hidden;
+  }
+  .cw-code-review-head {
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:12px;
+    padding:14px 16px;
+    border-bottom:1px solid var(--border);
+  }
+  .cw-code-review-title { color:var(--text); font-size:15px; font-weight:650; }
+  .cw-code-review-sub { margin-top:3px; color:var(--text-muted); font-size:11.5px; }
+  .cw-code-review-body { min-height:0; overflow-y:auto; padding:14px 16px 18px; }
+  .cw-review-empty { padding:36px 16px; color:var(--text-muted); text-align:center; font-size:13px; }
+  .cw-review-set { overflow:hidden; margin-bottom:12px; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+  .cw-review-set-head { display:flex; align-items:center; gap:8px; min-height:42px; padding:0 11px; border-bottom:1px solid var(--border); background:var(--surface-2); }
+  .cw-review-set-title { font-size:12.5px; font-weight:600; }
+  .cw-review-set-meta { color:var(--text-muted); font-size:11px; }
+  .cw-review-set-head .cw-review-rewind { margin-left:auto; }
+  .cw-review-file {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:12px;
+    align-items:center;
+    min-height:58px;
+    padding:8px 11px;
+    border-bottom:1px solid color-mix(in srgb,var(--border) 70%,transparent);
+  }
+  .cw-review-file:last-child { border-bottom:0; }
+  .cw-review-file-main { min-width:0; }
+  .cw-review-file-path { overflow:hidden; color:var(--text); text-overflow:ellipsis; white-space:nowrap; font:12px/1.35 'JetBrains Mono',ui-monospace,monospace; }
+  .cw-review-file-meta { display:flex; gap:7px; margin-top:4px; color:var(--text-muted); font-size:10.5px; }
+  .cw-review-file-actions { display:flex; gap:6px; }
+  .cw-review-btn {
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:5px;
+    min-height:34px;
+    padding:0 10px;
+    border:1px solid var(--border);
+    border-radius:8px;
+    background:var(--surface);
+    color:var(--text-muted);
+    cursor:pointer;
+    font:11.5px/1.2 inherit;
+  }
+  .cw-review-btn:hover,
+  .cw-review-btn:focus-visible { border-color:var(--border-strong); background:var(--surface-2); color:var(--text); outline:none; }
+  .cw-review-btn.primary { border-color:color-mix(in srgb,var(--accent) 36%,var(--border)); color:var(--accent); }
+  .cw-review-btn.danger { color:#b53d38; }
+  .cw-review-btn:disabled { opacity:.45; cursor:not-allowed; }
+  .cw-review-state { font-weight:600; }
+  .cw-review-state.kept { color:#16834a; }
+  .cw-review-state.reverted,
+  .cw-review-state.rewound { color:#b56a20; }
+
+  .cw-validation-zone { margin-top:16px; padding:13px; border:1px solid var(--border); border-radius:12px; background:var(--surface-2); }
+  .cw-validation-title { font-size:12.5px; font-weight:600; }
+  .cw-validation-help { margin-top:3px; color:var(--text-muted); font-size:11px; }
+  .cw-validation-form { display:flex; gap:8px; margin-top:10px; }
+  .cw-validation-form input { min-width:0; min-height:40px; flex:1; padding:0 11px; border:1px solid var(--border); border-radius:9px; background:var(--surface); color:var(--text); font:12px/1.3 'JetBrains Mono',ui-monospace,monospace; }
+  .cw-validation-form input:focus { border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 18%,transparent); }
+  .cw-validation-result { margin-top:10px; }
+  .cw-validation-card { overflow:hidden; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+  .cw-validation-card-head { display:flex; align-items:center; gap:8px; min-height:40px; padding:0 10px; border-bottom:1px solid var(--border); }
+  .cw-validation-status { font-weight:650; font-size:12px; }
+  .cw-validation-status.pass { color:#16834a; }
+  .cw-validation-status.fail { color:#b53d38; }
+  .cw-validation-command { min-width:0; overflow:hidden; color:var(--text-muted); text-overflow:ellipsis; white-space:nowrap; font:11px/1.3 'JetBrains Mono',ui-monospace,monospace; }
+  .cw-validation-duration { margin-left:auto; color:var(--text-subtle); font-size:10.5px; }
+  .cw-validation-output { max-height:240px; margin:0; overflow:auto; padding:10px 12px; background:#1d1f21; color:#dedbd7; white-space:pre-wrap; word-break:break-word; font:11px/1.55 'JetBrains Mono',ui-monospace,monospace; }
+  .cw-validation-actions { display:flex; justify-content:flex-end; gap:7px; padding:8px 10px; border-top:1px solid var(--border); }
+  .cw-validation-timeline { width:min(100%,720px); margin-top:12px; }
+
+  .cw-rewind-preview-list { display:grid; gap:7px; max-height:320px; overflow-y:auto; margin-top:12px; }
+  .cw-rewind-preview-file { padding:9px 10px; border:1px solid var(--border); border-radius:9px; background:var(--surface-2); color:var(--text); font:11.5px/1.35 'JetBrains Mono',ui-monospace,monospace; word-break:break-all; }
+  .cw-rewind-preview-actions { display:flex; justify-content:flex-end; gap:8px; padding:12px 16px calc(12px + env(safe-area-inset-bottom)); border-top:1px solid var(--border); }
+
+  @media (max-width: 640px) {
+    .cw-code-diff-row { grid-template-columns:34px 34px 20px minmax(max-content,1fr); }
+    .cw-code-diff-ln { padding:0 4px; }
+    .cw-code-review-box,
+    .cw-rewind-preview-box { width:100% !important; max-width:none !important; max-height:92dvh !important; border-radius:20px 20px 0 0 !important; }
+    .cw-code-review-body { padding:12px 10px 16px; }
+    .cw-review-file { grid-template-columns:1fr; gap:8px; }
+    .cw-review-file-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); }
+    .cw-review-btn,
+    .cw-inline-rewind { min-height:44px; }
+    .cw-validation-form { align-items:stretch; flex-direction:column; }
+    .cw-validation-form input { min-height:44px; font-size:16px; }
+    .cw-file-context-chip { min-height:36px; max-width:100%; }
+    .cw-file-context-chip button { width:32px; height:32px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cw-review-btn,
+    .cw-inline-rewind,
+    .cw-code-diff-fold > button { transition:none !important; scroll-behavior:auto !important; }
+  }
 
   .cli-list-intro {
     display: flex;
@@ -6155,6 +6540,7 @@
         <div id="urlChips" class="composer-upload-strip hidden"></div>
         <div id="docChips" class="composer-upload-strip hidden"></div>
         <div id="attachments" class="composer-upload-strip hidden"></div>
+        <div id="cwFileContextChips" class="cw-file-context-chips hidden" aria-label="本轮引用文件"></div>
         <textarea id="input" rows="1" placeholder="输入消息，让 Claude 帮你..."
           class="composer-textarea"></textarea>
         <div class="composer-actions">
@@ -6495,15 +6881,40 @@
             <div class="settings-hint">控制 Code 模式里的 WebSearch / WebFetch；关闭后仍可通过 Bash 使用 curl、npm、pip 等命令。</div>
           </div>
           <div class="settings-section">
-            <div class="flex items-center justify-between gap-3">
-              <div class="min-w-0">
-                <label class="settings-label" style="margin-bottom:2px;">Claude Agent SDK</label>
-                <div id="agentSdkStatusText" class="settings-hint" style="margin-top:0;">检测中…</div>
-                <div id="agentSdkPathText" class="settings-hint break-all"></div>
+            <div id="agentSdkCard" class="agent-sdk-card" data-status="checking">
+              <div class="agent-sdk-main">
+                <div class="agent-sdk-details">
+                  <div class="agent-sdk-heading">
+                    <span class="agent-sdk-mark" aria-hidden="true">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m7.5 4.3 4.5-2.6 4.5 2.6L12 6.9 7.5 4.3Z" />
+                        <path d="m3 6.9 4.5-2.6L12 6.9 7.5 9.5 3 6.9Z" />
+                        <path d="m12 6.9 4.5-2.6L21 6.9l-4.5 2.6L12 6.9Z" />
+                        <path d="M7.5 9.5 12 6.9l4.5 2.6v5.2L12 17.3l-4.5-2.6V9.5Z" />
+                        <path d="M3 6.9v5.2l4.5 2.6M21 6.9v5.2l-4.5 2.6M7.5 14.7v5.2l4.5 2.4 4.5-2.4v-5.2" />
+                      </svg>
+                    </span>
+                    <div class="min-w-0">
+                      <div class="settings-label" style="margin-bottom:2px;">Claude Agent SDK</div>
+                      <div class="agent-sdk-status-line">
+                        <span class="agent-sdk-status-indicator" aria-hidden="true"></span>
+                        <div id="agentSdkStatusText" class="settings-hint agent-sdk-status" role="status" aria-live="polite">检测中…</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="agentSdkPathText" class="agent-sdk-path"></div>
+                </div>
+                <button id="agentSdkInstallBtn" type="button" class="settings-btn agent-sdk-action" aria-describedby="agentSdkStatusText agentSdkPathText">
+                  <svg class="agent-sdk-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M20 6v5h-5" />
+                    <path d="M4 18v-5h5" />
+                    <path d="M6.1 9a7 7 0 0 1 11.6-2.6L20 11M4 13l2.3 4.6A7 7 0 0 0 17.9 15" />
+                  </svg>
+                  <span id="agentSdkInstallLabel">安装 SDK</span>
+                </button>
               </div>
-              <button id="agentSdkInstallBtn" type="button" class="settings-btn">安装 / 修复锁定版</button>
+              <div class="settings-hint agent-sdk-description">claude-web 使用自己的 <code>~/.claude-web</code> 安装目录和精确版本锁；不会自动跟随外部 SDK 或全局 Claude CLI 升级。应用升级改变锁定版本后，可在这里显式升级。</div>
             </div>
-            <div class="settings-hint">claude-web 使用自己的 <code>~/.claude-web</code> 安装目录和精确版本锁；不会自动追随 ccgui 或全局 Claude CLI 升级。应用升级改变锁定版本后，可在这里显式升级。</div>
           </div>
         </section>
 
@@ -6963,6 +7374,50 @@
       <button data-close class="sb-icon-btn" aria-label="关闭文件差异">×</button>
     </div>
     <pre id="gitDiffContent" class="git-diff-content">正在加载...</pre>
+  </div>
+</div>
+
+<div id="codeReviewModal" class="modal-backdrop hidden">
+  <div class="modal-box cw-code-review-box" role="dialog" aria-modal="true" aria-labelledby="codeReviewTitle">
+    <div class="cw-code-review-head">
+      <div class="min-w-0">
+        <div id="codeReviewTitle" class="cw-code-review-title">本会话改动</div>
+        <div id="codeReviewSummary" class="cw-code-review-sub">审查 Claude 在 Code 模式中产生的文件修改</div>
+      </div>
+      <button data-close class="sb-icon-btn" aria-label="关闭改动审查">×</button>
+    </div>
+    <div class="cw-code-review-body">
+      <div id="codeReviewList"></div>
+      <section class="cw-validation-zone" aria-labelledby="codeValidationTitle">
+        <div id="codeValidationTitle" class="cw-validation-title">运行验证</div>
+        <div class="cw-validation-help">留空会自动检测 npm、Make、pytest 或 unittest；结果会保存到当前 Code 会话。</div>
+        <div class="cw-validation-form">
+          <input id="codeValidationCommand" type="text" autocomplete="off" spellcheck="false" placeholder="例如：npm test" aria-label="测试或构建命令" />
+          <button id="codeValidationRun" type="button" class="cw-review-btn primary">运行验证</button>
+        </div>
+        <div id="codeValidationResult" class="cw-validation-result"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div id="rewindPreviewModal" class="modal-backdrop hidden">
+  <div class="modal-box cw-rewind-preview-box" role="dialog" aria-modal="true" aria-labelledby="rewindPreviewTitle">
+    <div class="cw-code-review-head">
+      <div class="min-w-0">
+        <div id="rewindPreviewTitle" class="cw-code-review-title">回退到此处</div>
+        <div id="rewindPreviewSummary" class="cw-code-review-sub">Claude Agent SDK 正在预览受影响文件</div>
+      </div>
+      <button data-close class="sb-icon-btn" aria-label="关闭回退预览">×</button>
+    </div>
+    <div class="cw-code-review-body">
+      <div class="text-sm" style="color:var(--text);">文件会恢复到这条用户消息发送前的状态；对话历史会保留。</div>
+      <div id="rewindPreviewList" class="cw-rewind-preview-list" aria-live="polite"></div>
+    </div>
+    <div class="cw-rewind-preview-actions">
+      <button type="button" data-close class="cw-review-btn">取消</button>
+      <button type="button" id="rewindPreviewConfirm" class="cw-review-btn danger" disabled>确认回退</button>
+    </div>
   </div>
 </div>
 
@@ -7474,9 +7929,11 @@ const contextHighWaterReminderEl = $('contextHighWaterReminder');
 const notifyEnabledEl = $('notifyEnabled'), soundEnabledEl = $('soundEnabled');
 const urlAutoFetchEl = $('urlAutoFetch');
 const codeWebSearchDefaultEl = $('codeWebSearchDefault');
+const agentSdkCard = $('agentSdkCard');
 const agentSdkStatusText = $('agentSdkStatusText');
 const agentSdkPathText = $('agentSdkPathText');
 const agentSdkInstallBtn = $('agentSdkInstallBtn');
+const agentSdkInstallLabel = $('agentSdkInstallLabel');
 const notificationMasterEnabled = $('notificationMasterEnabled');
 const notificationChannelsEl = $('notificationChannels');
 const notificationSearch = $('notificationSearch');
@@ -7537,6 +7994,11 @@ const settingsUsageTurns = $('settingsUsageTurns'), settingsUsageDuration = $('s
 const settingsUsageNote = $('settingsUsageNote');
 const openDetailedStatsBtn = $('openDetailedStatsBtn'), refreshUsageStatsBtn = $('refreshUsageStatsBtn');
 const gitDiffModal = $('gitDiffModal'), gitDiffPath = $('gitDiffPath'), gitDiffContent = $('gitDiffContent');
+const codeReviewModal = $('codeReviewModal'), codeReviewList = $('codeReviewList'), codeReviewSummary = $('codeReviewSummary');
+const codeValidationCommand = $('codeValidationCommand'), codeValidationRun = $('codeValidationRun'), codeValidationResult = $('codeValidationResult');
+const rewindPreviewModal = $('rewindPreviewModal'), rewindPreviewSummary = $('rewindPreviewSummary');
+const rewindPreviewList = $('rewindPreviewList'), rewindPreviewConfirm = $('rewindPreviewConfirm');
+const cwFileContextChips = $('cwFileContextChips');
 const memoryBar = $('memoryBar');
 const tokenBar = $('tokenBar');
 const tokenCounter = $('tokenCounter');
@@ -7990,12 +8452,15 @@ function addUserMessage(text, images, opts) {
       ${docsHtml}
       ${imagesHtml}
       ${textHtml}
+      ${codeMode ? `<div class="flex justify-end"><button type="button" data-native-rewind="${userIdx}" class="cw-inline-rewind ${currentCodeRuntime === 'claude_agent_sdk' ? '' : 'hidden'}" aria-label="回退到这条消息前的文件状态">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v6h6"/><path d="M12 7v5l3 2"/></svg>
+        <span>回退到此处</span>
+      </button></div>` : ''}
       <div class="user-msg-actions absolute -left-24 top-2 opacity-0 group-hover:opacity-100 flex flex-col gap-1 text-xs" style="color:var(--text-subtle);">
         <button data-copy="${encodeURIComponent(text)}" title="复制" class="hover:text-gray-700 dark:hover:text-gray-200">📋</button>
         <button data-feedback-star-user data-message-key="${messageKey}" data-event-index="${feedbackEventIndex}" data-excerpt="${escapeHtml(excerpt)}" title="标记为里程碑" class="hover:text-amber-500">⭐</button>
         <button data-edit="${userIdx}" title="编辑并留在当前对话" class="hover:text-blue-500">✏️</button>
-        ${hasCheckpoint ? `<button data-restore="${userIdx}" title="回滚此轮前的文件状态" class="hover:text-amber-500">⏪</button>` : ''}
-        ${codeMode && currentCodeRuntime === 'claude_agent_sdk' ? `<button data-native-rewind="${userIdx}" title="使用 Claude SDK 文件检查点回退" class="hover:text-purple-500">↶</button>` : ''}
+        ${hasCheckpoint && (!codeMode || currentCodeRuntime !== 'claude_agent_sdk') ? `<button data-restore="${userIdx}" title="回滚此轮前的文件状态" class="hover:text-amber-500">⏪</button>` : ''}
       </div>
     </div>
   `;
@@ -8310,23 +8775,186 @@ function attachRunButton(pre, code) {
   pre.appendChild(runBtn);
 }
 
-function renderEditDiff(inputData) {
-  const oldStr = inputData.old_string || '';
-  const newStr = inputData.new_string || '';
-  const fp = inputData.file_path || '';
-  return `
-    <div class="text-xs text-gray-600 dark:text-gray-400 mb-1">${escapeHtml(fp)}</div>
-    <div class="edit-diff-grid grid grid-cols-2 gap-2 text-xs">
-      <div class="min-w-0">
-        <div class="text-red-700 dark:text-red-400 font-medium mb-1">- 移除</div>
-        <pre class="bg-red-50 dark:bg-red-950/40 p-2 border border-red-200 dark:border-red-900 rounded overflow-x-auto m-0"><code>${escapeHtml(oldStr)}</code></pre>
-      </div>
-      <div class="min-w-0">
-        <div class="text-green-700 dark:text-green-400 font-medium mb-1">+ 新增</div>
-        <pre class="bg-green-50 dark:bg-green-950/40 p-2 border border-green-200 dark:border-green-900 rounded overflow-x-auto m-0"><code>${escapeHtml(newStr)}</code></pre>
-      </div>
+function codeDiffLanguage(filePath) {
+  const name = String(filePath || '').split(/[\\/]/).pop() || '';
+  const ext = (name.includes('.') ? name.split('.').pop() : '').toLowerCase();
+  const map = {
+    py: 'python', js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    ts: 'typescript', tsx: 'typescript', java: 'java', kt: 'kotlin', kts: 'kotlin',
+    go: 'go', rs: 'rust', rb: 'ruby', php: 'php', swift: 'swift', c: 'c', h: 'c',
+    cc: 'cpp', cpp: 'cpp', hpp: 'cpp', cs: 'csharp', sh: 'bash', zsh: 'bash', bash: 'bash',
+    html: 'xml', htm: 'xml', xml: 'xml', svg: 'xml', css: 'css', scss: 'scss', less: 'less',
+    json: 'json', jsonl: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini', ini: 'ini',
+    md: 'markdown', sql: 'sql', vue: 'xml', svelte: 'xml',
+  };
+  const lang = map[ext] || 'plaintext';
+  return window.hljs && hljs.getLanguage && hljs.getLanguage(lang) ? lang : 'plaintext';
+}
+
+function highlightCodeDiffLine(text, filePath) {
+  const source = String(text ?? '');
+  const lang = codeDiffLanguage(filePath);
+  if (!window.hljs || lang === 'plaintext') return escapeHtml(source);
+  try { return hljs.highlight(source, { language: lang, ignoreIllegals: true }).value; }
+  catch { return escapeHtml(source); }
+}
+
+function codeDiffWithLineNumbers(rawLines) {
+  let oldNo = 1;
+  let newNo = 1;
+  return rawLines.map(line => {
+    const out = { ...line, oldNo: null, newNo: null };
+    if (line.type !== 'add') out.oldNo = oldNo++;
+    if (line.type !== 'remove') out.newNo = newNo++;
+    return out;
+  });
+}
+
+function computeCodeLineDiff(oldText, newText) {
+  const oldLines = String(oldText || '').split('\n');
+  const newLines = String(newText || '').split('\n');
+  if (oldText === '' && newText === '') return [];
+  if (oldText === '') return codeDiffWithLineNumbers(newLines.map(content => ({ type: 'add', content })));
+  if (newText === '') return codeDiffWithLineNumbers(oldLines.map(content => ({ type: 'remove', content })));
+
+  const m = oldLines.length;
+  const n = newLines.length;
+  const cellCount = m * n;
+  let raw = [];
+  if (cellCount <= 360000 && Math.max(m, n) <= 1400) {
+    const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
+    for (let i = 1; i <= m; i += 1) {
+      for (let j = 1; j <= n; j += 1) {
+        dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+          ? dp[i - 1][j - 1] + 1
+          : Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    let i = m;
+    let j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+        raw.push({ type: 'context', content: oldLines[i - 1] }); i -= 1; j -= 1;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        raw.push({ type: 'add', content: newLines[j - 1] }); j -= 1;
+      } else {
+        raw.push({ type: 'remove', content: oldLines[i - 1] }); i -= 1;
+      }
+    }
+    raw.reverse();
+  } else {
+    // Avoid unbounded O(m*n) memory use for large edits. Preserve the
+    // common prefix/suffix and render the changed middle as one safe hunk.
+    let prefix = 0;
+    while (prefix < m && prefix < n && oldLines[prefix] === newLines[prefix]) prefix += 1;
+    let suffix = 0;
+    while (suffix < m - prefix && suffix < n - prefix && oldLines[m - 1 - suffix] === newLines[n - 1 - suffix]) suffix += 1;
+    raw = [
+      ...oldLines.slice(0, prefix).map(content => ({ type: 'context', content })),
+      ...oldLines.slice(prefix, m - suffix).map(content => ({ type: 'remove', content })),
+      ...newLines.slice(prefix, n - suffix).map(content => ({ type: 'add', content })),
+      ...oldLines.slice(m - suffix).map(content => ({ type: 'context', content })),
+    ];
+  }
+  return codeDiffWithLineNumbers(raw);
+}
+
+function renderCodeDiffRow(line, filePath) {
+  const glyph = line.type === 'add' ? '+' : (line.type === 'remove' ? '−' : ' ');
+  return `<div class="cw-code-diff-row ${line.type}">
+    <span class="cw-code-diff-ln">${line.oldNo ?? ''}</span>
+    <span class="cw-code-diff-ln">${line.newNo ?? ''}</span>
+    <span class="cw-code-diff-glyph">${glyph}</span>
+    <code class="cw-code-diff-code">${highlightCodeDiffLine(line.content, filePath)}</code>
+  </div>`;
+}
+
+function renderCodeDiffRows(lines, filePath) {
+  let html = '';
+  let index = 0;
+  while (index < lines.length) {
+    if (lines[index].type !== 'context') {
+      html += renderCodeDiffRow(lines[index], filePath);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < lines.length && lines[end].type === 'context') end += 1;
+    const run = lines.slice(index, end);
+    if (run.length <= 8) {
+      html += run.map(line => renderCodeDiffRow(line, filePath)).join('');
+    } else {
+      html += run.slice(0, 3).map(line => renderCodeDiffRow(line, filePath)).join('');
+      const hidden = run.slice(3, -3);
+      html += `<div class="cw-code-diff-fold">
+        <button type="button" data-expand-code-diff aria-expanded="false">显示 ${hidden.length} 行未修改内容</button>
+        <div class="cw-code-diff-fold-lines hidden">${hidden.map(line => renderCodeDiffRow(line, filePath)).join('')}</div>
+      </div>`;
+      html += run.slice(-3).map(line => renderCodeDiffRow(line, filePath)).join('');
+    }
+    index = end;
+  }
+  return html;
+}
+
+function renderUnifiedCodeDiff(oldText, newText, filePath, label = '行级修改') {
+  const lines = computeCodeLineDiff(oldText, newText);
+  const additions = lines.filter(line => line.type === 'add').length;
+  const deletions = lines.filter(line => line.type === 'remove').length;
+  return `<section class="cw-code-diff">
+    <div class="cw-code-diff-head">
+      <span>${escapeHtml(label)}</span>
+      <code title="${escapeHtml(filePath || '')}">${escapeHtml(filePath || '未命名文件')}</code>
+      <span class="cw-code-diff-stats">
+        ${additions ? `<span class="cw-code-diff-add">+${additions}</span>` : ''}
+        ${deletions ? `<span class="cw-code-diff-del">-${deletions}</span>` : ''}
+      </span>
     </div>
-  `;
+    <div class="cw-code-diff-body">${lines.length ? renderCodeDiffRows(lines, filePath) : '<div class="cw-code-diff-empty">没有可显示的行级差异</div>'}</div>
+  </section>`;
+}
+
+function hasRenderableCodeDiff(name, inputData) {
+  const input = inputData || {};
+  if (name === 'Write') return typeof (input.content ?? input.file_content) === 'string';
+  if (name === 'MultiEdit' && Array.isArray(input.edits)) return input.edits.length > 0;
+  if (name !== 'Edit' && name !== 'MultiEdit') return false;
+  return typeof (input.old_string ?? input.oldString) === 'string'
+    || typeof (input.new_string ?? input.newString) === 'string';
+}
+
+function renderEditDiff(inputData) {
+  const oldStr = inputData.old_string ?? inputData.oldString ?? '';
+  const newStr = inputData.new_string ?? inputData.newString ?? '';
+  const fp = inputData.file_path ?? inputData.filePath ?? '';
+  if (!codeMode) {
+    return `
+      <div class="text-xs text-gray-600 dark:text-gray-400 mb-1">${escapeHtml(fp)}</div>
+      <div class="edit-diff-grid grid grid-cols-2 gap-2 text-xs">
+        <div class="min-w-0">
+          <div class="text-red-700 dark:text-red-400 font-medium mb-1">- 移除</div>
+          <pre class="bg-red-50 dark:bg-red-950/40 p-2 border border-red-200 dark:border-red-900 rounded overflow-x-auto m-0"><code>${escapeHtml(oldStr)}</code></pre>
+        </div>
+        <div class="min-w-0">
+          <div class="text-green-700 dark:text-green-400 font-medium mb-1">+ 新增</div>
+          <pre class="bg-green-50 dark:bg-green-950/40 p-2 border border-green-200 dark:border-green-900 rounded overflow-x-auto m-0"><code>${escapeHtml(newStr)}</code></pre>
+        </div>
+      </div>
+    `;
+  }
+  const edits = Array.isArray(inputData.edits) && inputData.edits.length ? inputData.edits : [inputData];
+  return edits.map((edit, index) => renderUnifiedCodeDiff(
+    edit.old_string ?? edit.oldString ?? '',
+    edit.new_string ?? edit.newString ?? '',
+    fp,
+    edits.length > 1 ? `修改 ${index + 1}/${edits.length}` : '行级修改',
+  )).join('');
+}
+
+function renderWriteDiff(inputData) {
+  const fp = inputData.file_path ?? inputData.filePath ?? '';
+  const content = inputData.content ?? inputData.file_content ?? '';
+  return renderUnifiedCodeDiff('', String(content || ''), fp, '写入内容');
 }
 
 let toolUseBlocks = new Map();
@@ -8400,6 +9028,9 @@ function renderToolUseBody(name, inputData) {
   if (name === 'Edit' || name === 'MultiEdit') {
     return `<div data-tool-body class="p-3">${renderEditDiff(inputData || {})}</div>`;
   }
+  if (codeMode && name === 'Write') {
+    return `<div data-tool-body class="p-3">${renderWriteDiff(inputData || {})}</div>`;
+  }
   return `<pre data-tool-body class="px-3 py-2 text-xs overflow-x-auto bg-blue-100/50 dark:bg-blue-950/60 m-0 rounded-none">${escapeHtml(JSON.stringify(inputData || {}, null, 2))}</pre>`;
 }
 
@@ -8452,7 +9083,13 @@ function updateToolUseInput(id, inputData) {
     if (fileEl) fileEl.textContent = file || '';
     if (linesEl) linesEl.textContent = lines || '';
     if (argEl) argEl.textContent = arg || '';
-    if (chip.classList.contains('active') && info.detailEl) {
+    if (codeMode && info.detailEl && hasRenderableCodeDiff(info.name, info.inputData) && info.detailEl.dataset.diffAutoOpened !== '1') {
+      info.detailEl.dataset.diffAutoOpened = '1';
+      chip.classList.add('active');
+      chip.setAttribute('aria-expanded', 'true');
+      renderToolDetail(info.detailEl, info);
+      info.detailEl.classList.remove('hidden');
+    } else if (chip.classList.contains('active') && info.detailEl) {
       renderToolDetail(info.detailEl, info);
     }
     return true;
@@ -9126,7 +9763,7 @@ function toggleChipDetail(chip, info, detailEl) {
   const parent = chip.parentElement;
   const isActive = chip.classList.contains('active');
   // Clear other active cards in same list
-  if (parent) parent.querySelectorAll('.tool-chip.active, .tool-card.active').forEach(c => c.classList.remove('active'));
+  if (!codeMode && parent) parent.querySelectorAll('.tool-chip.active, .tool-card.active').forEach(c => c.classList.remove('active'));
   if (isActive) {
     detailEl.classList.add('hidden');
     detailEl.innerHTML = '';
@@ -9255,14 +9892,10 @@ function addToolChip(container, name, inputData, options = {}) {
 
   // Code mode: use new vertical card style
   const list = getOrCreateToolCardList(container);
-
-  // detail panel lives after the list
-  let detail = list.nextElementSibling;
-  if (!detail || !detail.classList.contains('tool-card-detail')) {
-    detail = document.createElement('div');
-    detail.className = 'tool-card-detail hidden';
-    list.after(detail);
-  }
+  // Each Code tool owns its detail panel so multiple edit diffs can remain
+  // expanded in the conversation at the same time as inline Edit blocks.
+  const detail = document.createElement('div');
+  detail.className = 'tool-card-detail hidden';
 
   const card = document.createElement('button');
   card.type = 'button';
@@ -9283,6 +9916,7 @@ function addToolChip(container, name, inputData, options = {}) {
     <span class="tool-card-dot ${dotClass}"></span>
   `;
   list.appendChild(card);
+  list.appendChild(detail);
 
   if (id) {
     if (toolUseBlocks.has(id)) {
@@ -9307,7 +9941,18 @@ function addToolChip(container, name, inputData, options = {}) {
       if (isPending && !pendingToolUseIds.includes(id)) pendingToolUseIds.push(id);
     }
     const info = toolUseBlocks.get(id);
-    card.addEventListener('click', () => toggleChipDetail(card, info, detail));
+    card.setAttribute('aria-expanded', 'false');
+    card.addEventListener('click', () => {
+      toggleChipDetail(card, info, detail);
+      card.setAttribute('aria-expanded', card.classList.contains('active') ? 'true' : 'false');
+    });
+    if (hasRenderableCodeDiff(name, input)) {
+      detail.dataset.diffAutoOpened = '1';
+      card.classList.add('active');
+      card.setAttribute('aria-expanded', 'true');
+      renderToolDetail(detail, info);
+      detail.classList.remove('hidden');
+    }
   }
   return card;
 }
@@ -9745,7 +10390,7 @@ function applyNativeContextUsage(data) {
 }
 
 async function refreshNativeContextUsage(options = {}) {
-  if (!codeMode || !sessionId) return null;
+  if (!codeMode || !sessionId || currentCodeRuntime !== 'claude_agent_sdk') return null;
   const targetSessionId = sessionId;
   const requestSerial = ++contextUsageRequestSerial;
   const perm = buildPermissionPayload();
@@ -9777,7 +10422,7 @@ async function refreshNativeContextUsage(options = {}) {
 }
 
 function scheduleNativeContextUsageRefresh(delay = 250) {
-  if (!codeMode || !sessionId) return;
+  if (!codeMode || !sessionId || currentCodeRuntime !== 'claude_agent_sdk') return;
   if (contextUsageRefreshTimer) clearTimeout(contextUsageRefreshTimer);
   contextUsageRefreshTimer = setTimeout(() => {
     contextUsageRefreshTimer = null;
@@ -10103,13 +10748,18 @@ function recoveredPermissionEvent(item) {
 
 function startNativeTurnRecovery(targetSessionId, initialEventCount, initialContainer = null) {
   stopNativeTurnRecovery();
-  if (!codeMode || !targetSessionId) return;
+  if (!codeMode || !targetSessionId || currentCodeRuntime !== 'claude_agent_sdk') return;
   const serial = nativeTurnRecoverySerial;
   let eventCount = Number(initialEventCount || 0);
   let asstContainer = initialContainer;
 
   const poll = async () => {
-    if (serial !== nativeTurnRecoverySerial || sessionId !== targetSessionId || !codeMode) return;
+    if (
+      serial !== nativeTurnRecoverySerial
+      || sessionId !== targetSessionId
+      || !codeMode
+      || currentCodeRuntime !== 'claude_agent_sdk'
+    ) return;
     try {
       const stateResponse = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/permissions/pending`);
       if (!stateResponse.ok) {
@@ -10739,6 +11389,7 @@ function handleEvent(obj, container, options = {}) {
   if (obj.type === 'meta') {
     sessionId = obj.session_id;
     if (obj.runtime) currentCodeRuntime = obj.runtime;
+    syncNativeCodeControls();
     sessionLabelText.textContent = '会话 ' + sessionId.slice(0, 8);
     suggestTitleBtn.classList.remove('hidden');
     if (obj.has_checkpoint && lastUserIndex >= 0) {
@@ -10775,6 +11426,17 @@ function handleEvent(obj, container, options = {}) {
     return container;
   }
   if (obj.type === 'system' && (obj.subtype === 'hook_started' || obj.subtype === 'hook_response' || obj.subtype === 'status')) {
+    return container;
+  }
+  if (obj.type === 'code_validation') {
+    if (!codeMode) return container;
+    registerCodeValidation(obj);
+    return addCodeValidationBlock(container, obj);
+  }
+  if (obj.type === 'code_rewind') {
+    if (!codeMode) return container;
+    applyCodeRewindEvent(obj);
+    addSystemInfo(`Claude SDK 原生文件回退完成${Array.isArray(obj.files_changed) ? ` · ${obj.files_changed.length} 个文件` : ''}`);
     return container;
   }
   if (obj.type === 'stream_event' && obj.event) {
@@ -10838,7 +11500,11 @@ function handleEvent(obj, container, options = {}) {
     updateTokenCount();
     if (!replay) scheduleNativeContextUsageRefresh();
     refreshStats();
-    if (codeMode) renderChangedFilesSummary(container, obj.changed_files || []);
+    if (codeMode) renderChangedFilesSummary(container, obj.changed_files || [], {
+      changeSetId: obj.change_set_id || '',
+      eventIndex,
+      userIndex: lastUserIndex,
+    });
     const denials = obj.permission_denials;
     if (Array.isArray(denials) && denials.length > 0) {
       const toolNames = [...new Set(denials.map(d => d.tool_name).filter(Boolean))];
@@ -11111,14 +11777,23 @@ document.addEventListener('click', (e) => {
   if (nativeRewindBtn) {
     e.stopPropagation();
     const userIdx = Number(nativeRewindBtn.dataset.nativeRewind);
-    if (!confirm('使用 Claude Agent SDK 原生文件检查点回退到此轮？\n\n该操作只回退 Claude SDK 记录的文件变更；Git checkpoint 回滚按钮仍保留。')) return;
-    rewindNativeFiles(userIdx);
+    previewNativeRewind(userIdx);
     return;
   }
 });
 
 // ===== helpers for user-msg DOM =====
+function syncNativeCodeControls() {
+  const nativeOwned = codeMode && currentCodeRuntime === 'claude_agent_sdk';
+  chatInner?.querySelectorAll('[data-native-rewind]').forEach(button => {
+    button.classList.toggle('hidden', !nativeOwned);
+  });
+}
+
 function markLastUserMessageCheckpoint(userIdx) {
+  // SDK-owned Code sessions use the native checkpoint/rewind API. Historical
+  // CLI sessions keep their legacy checkpoint action for compatibility.
+  if (codeMode && currentCodeRuntime === 'claude_agent_sdk') return;
   const wrap = chatInner.querySelector(`.user-msg-wrap[data-user-index="${userIdx}"]`);
   if (!wrap) return;
   const actions = wrap.querySelector('.user-msg-actions');
@@ -11248,31 +11923,89 @@ async function restoreCheckpoint(userIdx) {
   }
 }
 
-async function rewindNativeFiles(userIdx) {
-  if (!sessionId) return;
+let pendingNativeRewind = null;
+
+async function rewindNativeFiles(userIdx, options = {}) {
+  if (!sessionId) throw new Error('当前没有 Code 会话');
+  const targetSessionId = sessionId;
+  const perm = buildPermissionPayload();
+  const response = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/rewind/native`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      event_index: userIdx,
+      dry_run: !!options.dryRun,
+      model: modelSelect.value || null,
+      effort: effectiveEffortForSend() || null,
+      permission_mode: perm.permission_mode,
+      allowed_tools: perm.allowed_tools,
+      disallowed_tools: perm.disallowed_tools,
+    }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+  if (sessionId !== targetSessionId) throw new Error('回退期间切换了会话');
+  return data;
+}
+
+function rewindPreviewFileLabel(item) {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return String(item || '未知文件');
+  return item.path || item.filePath || item.file || JSON.stringify(item);
+}
+
+async function previewNativeRewind(userIdx) {
+  if (!codeMode || !Number.isFinite(userIdx) || userIdx < 0) return;
+  if (currentCodeRuntime !== 'claude_agent_sdk') {
+    toast('这个历史会话不归 Claude Agent SDK 管理，请使用原 checkpoint 回滚');
+    return;
+  }
+  pendingNativeRewind = { userIdx, sessionId };
+  rewindPreviewConfirm.disabled = true;
+  rewindPreviewSummary.textContent = `正在预览第 ${userIdx + 1} 轮之后的文件影响…`;
+  rewindPreviewList.innerHTML = '<div class="cw-rewind-preview-file">正在读取 Claude Agent SDK checkpoint…</div>';
+  openModal(rewindPreviewModal);
   try {
-    const perm = buildPermissionPayload();
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/rewind/native`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        event_index: userIdx,
-        model: modelSelect.value || null,
-        effort: effectiveEffortForSend() || null,
-        permission_mode: perm.permission_mode,
-        allowed_tools: perm.allowed_tools,
-        disallowed_tools: perm.disallowed_tools,
-      }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    const data = await rewindNativeFiles(userIdx, { dryRun: true });
+    if (!pendingNativeRewind || pendingNativeRewind.sessionId !== sessionId || pendingNativeRewind.userIdx !== userIdx) return;
     const result = data.result || {};
-    addSystemInfo(`↶ Claude SDK 原生文件回退完成${Array.isArray(result.filesChanged) ? ` · ${result.filesChanged.length} 个文件` : ''}`);
-    refreshGitStatus();
+    const files = Array.isArray(result.filesChanged) ? result.filesChanged : [];
+    const canRewind = result.canRewind !== false;
+    rewindPreviewSummary.textContent = files.length
+      ? `将影响 ${files.length} 个文件 · 对话历史保留`
+      : (canRewind ? 'SDK 没有报告具体文件；仍可执行原生回退' : '当前 checkpoint 无法回退');
+    rewindPreviewList.innerHTML = files.length
+      ? files.map(item => `<div class="cw-rewind-preview-file">${escapeHtml(rewindPreviewFileLabel(item))}</div>`).join('')
+      : `<div class="cw-rewind-preview-file">${canRewind ? '没有可列出的文件变更' : 'Claude Agent SDK 返回 canRewind=false'}</div>`;
+    rewindPreviewConfirm.disabled = !canRewind;
   } catch (error) {
-    alert('SDK 文件回退失败: ' + (error.message || error));
+    rewindPreviewSummary.textContent = '回退预览失败';
+    rewindPreviewList.innerHTML = `<div class="cw-rewind-preview-file" style="color:#b53d38;">${escapeHtml(error.message || error)}</div>`;
   }
 }
+
+rewindPreviewConfirm?.addEventListener('click', async () => {
+  const pending = pendingNativeRewind;
+  if (!pending || pending.sessionId !== sessionId) return;
+  rewindPreviewConfirm.disabled = true;
+  rewindPreviewConfirm.textContent = '正在回退…';
+  try {
+    const data = await rewindNativeFiles(pending.userIdx, { dryRun: false });
+    closeModal(rewindPreviewModal);
+    pendingNativeRewind = null;
+    if (data.rewind_event) handleEvent(data.rewind_event, null, { replay: false });
+    else addSystemInfo('Claude Agent SDK 原生文件回退完成');
+    refreshGitStatus();
+    refreshSessionStatsDiff();
+    scheduleNativeContextUsageRefresh(0);
+  } catch (error) {
+    rewindPreviewSummary.textContent = '回退失败';
+    rewindPreviewList.innerHTML = `<div class="cw-rewind-preview-file" style="color:#b53d38;">${escapeHtml(error.message || error)}</div>`;
+    rewindPreviewConfirm.disabled = false;
+  } finally {
+    rewindPreviewConfirm.textContent = '确认回退';
+  }
+});
 
 
 // ===== image upload =====
@@ -11456,15 +12189,99 @@ function syncComposerDraftState() {
 
 // ===== draft autosave =====
 const draftKey = () => 'draft_' + (sessionId || 'new');
-function saveDraft() { localStorage.setItem(draftKey(), input.value); }
+const draftFileRefsKey = () => draftKey() + '_code_files';
+const codeFileReferences = new Map();
+
+function renderCodeFileReferences() {
+  if (!cwFileContextChips) return;
+  if (!codeMode || codeFileReferences.size === 0) {
+    cwFileContextChips.classList.add('hidden');
+    cwFileContextChips.innerHTML = '';
+    return;
+  }
+  cwFileContextChips.classList.remove('hidden');
+  cwFileContextChips.innerHTML = [...codeFileReferences.entries()].map(([path, label]) => `
+    <span class="cw-file-context-chip" title="${escapeHtml(path)}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg>
+      <span>${escapeHtml(label || path)}</span>
+      <button type="button" data-remove-code-file="${encodeURIComponent(path)}" aria-label="移除文件引用 ${escapeHtml(label || path)}">×</button>
+    </span>
+  `).join('');
+}
+
+function persistCodeFileReferences() {
+  if (!codeMode) return;
+  try {
+    localStorage.setItem(draftFileRefsKey(), JSON.stringify(
+      [...codeFileReferences.entries()].map(([path, label]) => ({ path, label })),
+    ));
+  } catch {}
+}
+
+function addCodeFileReference(path, label) {
+  const normalized = String(path || '').trim();
+  if (!codeMode || !normalized) return;
+  codeFileReferences.set(normalized, String(label || pathBasename(normalized) || normalized));
+  persistCodeFileReferences();
+  renderCodeFileReferences();
+}
+
+function pruneCodeFileReferences() {
+  if (!codeMode || codeFileReferences.size === 0) return;
+  let changed = false;
+  for (const path of [...codeFileReferences.keys()]) {
+    if (!input.value.includes('@' + path)) {
+      codeFileReferences.delete(path);
+      changed = true;
+    }
+  }
+  if (changed) {
+    persistCodeFileReferences();
+    renderCodeFileReferences();
+  }
+}
+
+cwFileContextChips?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-remove-code-file]');
+  if (!button) return;
+  const path = decodeURIComponent(button.dataset.removeCodeFile || '');
+  codeFileReferences.delete(path);
+  input.value = input.value.replace('@' + path, '').replace(/ {2,}/g, ' ');
+  persistCodeFileReferences();
+  renderCodeFileReferences();
+  updateTokenCount();
+  autosizeTextarea();
+  saveDraft();
+  input.focus();
+});
+
+function saveDraft() {
+  localStorage.setItem(draftKey(), input.value);
+  persistCodeFileReferences();
+}
 function restoreDraft() {
   input.value = localStorage.getItem(draftKey()) || '';
+  codeFileReferences.clear();
+  if (codeMode) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(draftFileRefsKey()) || '[]');
+      for (const item of Array.isArray(saved) ? saved : []) {
+        if (item && item.path && input.value.includes('@' + item.path)) {
+          codeFileReferences.set(String(item.path), String(item.label || pathBasename(item.path) || item.path));
+        }
+      }
+    } catch {}
+  }
+  renderCodeFileReferences();
   updateTokenCount();
   autosizeTextarea();
   syncComposerDraftState();
 }
 function clearDraft() {
   localStorage.removeItem(draftKey());
+  localStorage.removeItem(draftFileRefsKey());
+  codeFileReferences.clear();
+  renderCodeFileReferences();
   syncComposerDraftState();
 }
 
@@ -11803,7 +12620,7 @@ async function maybeShowPicker() {
       const prompts = promptsResp.ok ? await promptsResp.json() : [];
       const memories = memoriesResp.ok ? await memoriesResp.json() : [];
       pickerItems = [
-        ...files.map(f => ({ kind: 'file', label: f.rel, meta: '文件', value: '@' + f.path })),
+        ...files.map(f => ({ kind: 'file', label: f.rel, meta: '文件', path: f.path, value: '@' + f.path + ' ' })),
         ...sessions.map(s => ({ kind: 'session', label: s.title || s.id.slice(0, 8), meta: '会话', id: s.id })),
         ...prompts.map(p => ({ kind: 'prompt', label: p.name, meta: '提示词', content: p.content })),
         ...memories.map(m => ({ kind: 'memory', label: m.content.slice(0, 60), meta: '记忆 · ' + m.scope, content: m.content })),
@@ -11894,6 +12711,7 @@ async function insertPickerSelection(i) {
     input.value = before.replace(/^\/(?:([A-Za-z][^\s/]*)?)$/, () => insertText) + after;
   } else if (item.kind === 'file') {
     input.value = before.replace(/@([^\s@]*)$/, () => item.value) + after;
+    if (codeMode && item.path) addCodeFileReference(item.path, item.label || item.path);
   } else {
     if (item.kind === 'session') {
       try {
@@ -12570,6 +13388,7 @@ function autosizeTextarea() {
 }
 input.addEventListener('input', () => {
   updateTokenCount();
+  pruneCodeFileReferences();
   saveDraft();
   maybeShowPicker();
   scheduleUrlDetect();
@@ -12586,7 +13405,9 @@ newSessionBtn.addEventListener('click', () => {
 function startNewSession() {
   stopNativeTurnRecovery();
   hidePicker();
+  pendingNativeRewind = null;
   sessionId = null;
+  currentCodeRuntime = 'unknown';
   sessionFeedback = {};
   milestoneView = false;
   titleLabel.textContent = codeMode ? 'Code 模式' : '新会话';
@@ -12605,6 +13426,8 @@ function startNewSession() {
   lastStreamingMsgId = null;
   resetToolUseRuntimeState();
   resetSessionTokens();
+  resetCodeReviewState();
+  resetSessionStatsBar();
   refreshMemories();
   restoreDraft();
   updateViewTabs();
@@ -13138,12 +13961,15 @@ async function loadSession(id) {
     sessionLabelText.textContent = '会话 ' + data.id.slice(0, 8);
     streamedIds.clear();
     lastStreamingMsgId = null;
+    pendingNativeRewind = null;
     resetToolUseRuntimeState();
     hideTodoPanel();
     clearArtifacts();
     currentUserIndex = 0;
     lastUserIndex = -1;
     resetSessionTokens();
+    resetCodeReviewState();
+    resetSessionStatsBar();
     if (data.cwd) cwdInput.value = data.cwd;
     updateWorkspaceLabels();
     refreshMemories();
@@ -13249,52 +14075,336 @@ function gitStatusLabel(status) {
   return '修改';
 }
 
-function renderGitDiffHtml(diff) {
-  return String(diff || '').split('\n').map(line => {
+function renderGitDiffHtml(diff, filePath = '') {
+  const text = String(diff || '');
+  if (!codeMode) {
+    return text.split('\n').map(line => {
+      let cls = 'context';
+      if (line.startsWith('+') && !line.startsWith('+++')) cls = 'add';
+      else if (line.startsWith('-') && !line.startsWith('---')) cls = 'remove';
+      else if (line.startsWith('@@')) cls = 'hunk';
+      else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) cls = 'meta';
+      return `<span class="git-diff-line ${cls}">${escapeHtml(line)}</span>`;
+    }).join('\n');
+  }
+  if (!text) return '<span class="git-diff-line meta">没有可显示的差异</span>';
+  return text.split('\n').map(line => {
     let cls = 'context';
     if (line.startsWith('+') && !line.startsWith('+++')) cls = 'add';
     else if (line.startsWith('-') && !line.startsWith('---')) cls = 'remove';
     else if (line.startsWith('@@')) cls = 'hunk';
-    else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) cls = 'meta';
+    else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++') || line.startsWith('Binary ')) cls = 'meta';
+    if (cls === 'add' || cls === 'remove' || (cls === 'context' && line.startsWith(' '))) {
+      const prefix = line.slice(0, 1);
+      const content = line.slice(1);
+      return `<span class="git-diff-line ${cls}"><span class="git-diff-prefix">${escapeHtml(prefix)}</span><span class="hljs">${highlightCodeDiffLine(content, filePath)}</span></span>`;
+    }
     return `<span class="git-diff-line ${cls}">${escapeHtml(line)}</span>`;
-  }).join('\n');
+  }).join('');
 }
 
-async function openGitFileDiff(path) {
+async function openGitFileDiff(path, providedDiff = null, options = {}) {
   const cwd = cwdInput.value.trim();
   if (!cwd || !path || !gitDiffModal) return;
-  if (gitDiffPath) gitDiffPath.textContent = path;
+  if (gitDiffPath) gitDiffPath.textContent = options.turnLabel ? `${path} · ${options.turnLabel}` : path;
   if (gitDiffContent) gitDiffContent.textContent = '正在加载差异...';
   openModal(gitDiffModal);
   try {
-    const query = new URLSearchParams({ cwd, path });
-    const r = await fetch('/api/git/diff?' + query.toString());
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.detail || '读取差异失败');
-    if (gitDiffContent) gitDiffContent.innerHTML = renderGitDiffHtml(data.diff || '');
+    let diffText = providedDiff;
+    if (typeof diffText !== 'string') {
+      const query = new URLSearchParams({ cwd, path });
+      const r = await fetch('/api/git/diff?' + query.toString());
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.detail || '读取差异失败');
+      diffText = data.diff || '';
+    }
+    if (options.truncated) diffText += '\n\n[Diff 已截断，仅供审查；为安全起见不能自动反向应用]\n';
+    if (gitDiffContent) gitDiffContent.innerHTML = renderGitDiffHtml(diffText || '', path);
   } catch (e) {
     if (gitDiffContent) gitDiffContent.textContent = e.message || '读取差异失败';
   }
 }
 
-async function renderChangedFilesSummary(container, changedFiles = []) {
+const codeReviewState = {
+  changeSets: [],
+  validations: [],
+};
+
+function resetCodeReviewState() {
+  codeReviewState.changeSets = [];
+  codeReviewState.validations = [];
+  if (codeReviewList) codeReviewList.innerHTML = '';
+  if (codeValidationResult) codeValidationResult.innerHTML = '';
+}
+
+function codeReviewTurnLabel(userIndex) {
+  return Number.isFinite(Number(userIndex)) && Number(userIndex) >= 0 ? `第 ${Number(userIndex) + 1} 轮` : '本轮';
+}
+
+function recomputeCodeReviewStats() {
+  const activeSets = codeReviewState.changeSets.filter(set => !set.rewound);
+  const activeFiles = activeSets.flatMap(set => set.files).filter(file => file.review_state !== 'reverted');
+  sessionStatsState.changedFiles = [...new Set(activeFiles.map(file => file.path).filter(Boolean))];
+  sessionStatsState.addLines = activeFiles.reduce((sum, file) => sum + (Number(file.additions) || 0), 0);
+  sessionStatsState.delLines = activeFiles.reduce((sum, file) => sum + (Number(file.deletions) || 0), 0);
+  renderSessionStatsBar();
+}
+
+function registerCodeChangeSet(changedFiles, meta = {}) {
+  const files = Array.isArray(changedFiles)
+    ? changedFiles.map(file => ({
+        ...file,
+        path: String(file?.path || '').trim(),
+        status: String(file?.status || 'M').trim() || 'M',
+        additions: Number(file?.additions || 0),
+        deletions: Number(file?.deletions || 0),
+        diff: typeof file?.diff === 'string' ? file.diff : '',
+        review_state: String(file?.review_state || ''),
+      })).filter(file => file.path)
+    : [];
+  if (!files.length) return null;
+  const id = String(meta.changeSetId || `event-${meta.eventIndex}-${meta.userIndex}`);
+  let set = codeReviewState.changeSets.find(item => item.id === id);
+  if (!set) {
+    set = {
+      id,
+      eventIndex: Number(meta.eventIndex ?? -1),
+      userIndex: Number(meta.userIndex ?? -1),
+      files,
+      rewound: false,
+    };
+    codeReviewState.changeSets.push(set);
+  } else {
+    set.files = files;
+    set.eventIndex = Number(meta.eventIndex ?? set.eventIndex);
+    set.userIndex = Number(meta.userIndex ?? set.userIndex);
+  }
+  recomputeCodeReviewStats();
+  return set;
+}
+
+function registerCodeValidation(event) {
+  if (!event || !event.validation_id) return;
+  const existing = codeReviewState.validations.findIndex(item => item.validation_id === event.validation_id);
+  if (existing >= 0) codeReviewState.validations[existing] = event;
+  else codeReviewState.validations.push(event);
+  if (codeValidationResult) codeValidationResult.innerHTML = renderCodeValidationCard(event);
+}
+
+function renderCodeValidationCard(event) {
+  if (!event) return '';
+  const passed = Number(event.returncode) === 0 && !event.timed_out;
+  const output = [event.stdout || '', event.stderr ? `--- stderr ---\n${event.stderr}` : ''].filter(Boolean).join('\n');
+  const duration = event.duration_ms !== undefined ? `${(Number(event.duration_ms) / 1000).toFixed(1)}s` : '';
+  return `<section class="cw-validation-card" data-validation-id="${escapeHtml(event.validation_id || '')}">
+    <div class="cw-validation-card-head">
+      <span class="cw-validation-status ${passed ? 'pass' : 'fail'}">${passed ? '验证通过' : '验证失败'}</span>
+      <code class="cw-validation-command" title="${escapeHtml(event.command || '')}">${escapeHtml(event.command || '')}</code>
+      <span class="cw-validation-duration">${escapeHtml(duration)}</span>
+    </div>
+    ${output ? `<pre class="cw-validation-output">${escapeHtml(output)}</pre>` : '<div class="cw-code-diff-empty">命令没有输出</div>'}
+    ${passed ? '' : `<div class="cw-validation-actions"><button type="button" class="cw-review-btn primary" data-fix-validation="${escapeHtml(event.validation_id || '')}">让 Claude 修</button></div>`}
+  </section>`;
+}
+
+function addCodeValidationBlock(container, event) {
+  if (!codeMode) return container;
+  if (!container) container = newAssistantBubble();
+  const block = document.createElement('div');
+  block.className = 'cw-validation-timeline';
+  block.innerHTML = renderCodeValidationCard(event);
+  container.appendChild(block);
+  scrollBottom();
+  return container;
+}
+
+function applyCodeRewindEvent(event) {
+  const rawTarget = event?.event_index;
+  const target = rawTarget === null || rawTarget === undefined ? NaN : Number(rawTarget);
+  if (Number.isInteger(target) && target >= 0) {
+    for (const set of codeReviewState.changeSets) {
+      if (set.userIndex >= target) {
+        set.rewound = true;
+        set.files.forEach(file => { file.review_state = 'rewound'; });
+      }
+    }
+  }
+  recomputeCodeReviewStats();
+  renderCodeReviewPanel();
+}
+
+function renderCodeReviewPanel() {
+  if (!codeReviewList || !codeMode) return;
+  const sets = [...codeReviewState.changeSets].sort((a, b) => b.userIndex - a.userIndex);
+  const allFiles = sets.flatMap(set => set.files);
+  const activeFiles = allFiles.filter(file => !['reverted', 'rewound'].includes(file.review_state));
+  if (codeReviewSummary) {
+    const add = activeFiles.reduce((sum, file) => sum + (file.additions || 0), 0);
+    const del = activeFiles.reduce((sum, file) => sum + (file.deletions || 0), 0);
+    codeReviewSummary.textContent = `${new Set(activeFiles.map(file => file.path)).size} 个当前文件 · +${add} / -${del} · ${sets.length} 个变更集`;
+  }
+  if (!sets.length) {
+    codeReviewList.innerHTML = '<div class="cw-review-empty">当前 Code 会话还没有检测到文件修改。</div>';
+  } else {
+    codeReviewList.innerHTML = sets.map(set => {
+      const setAdd = set.files.reduce((sum, file) => sum + (file.additions || 0), 0);
+      const setDel = set.files.reduce((sum, file) => sum + (file.deletions || 0), 0);
+      const persistedChangeSet = /^[0-9a-f]{32}$/.test(set.id);
+      return `<section class="cw-review-set" data-review-set="${escapeHtml(set.id)}">
+        <div class="cw-review-set-head">
+          <span class="cw-review-set-title">${escapeHtml(codeReviewTurnLabel(set.userIndex))}</span>
+          <span class="cw-review-set-meta">${set.files.length} 文件 · +${setAdd} / -${setDel}${set.rewound ? ' · 已整体回退' : ''}</span>
+          <button type="button" class="cw-review-btn cw-review-rewind" data-review-rewind="${set.userIndex}" ${set.rewound || set.userIndex < 0 ? 'disabled' : ''}>回退整轮</button>
+        </div>
+        <div>${set.files.map(file => {
+          const state = set.rewound ? 'rewound' : (file.review_state || 'pending');
+          const stateLabel = state === 'kept' ? '已保留' : state === 'reverted' ? '已撤销' : state === 'rewound' ? '已整体回退' : '待审查';
+          const keyId = encodeURIComponent(set.id);
+          const keyPath = encodeURIComponent(file.path);
+          const cannotRevert = !persistedChangeSet || set.rewound || state === 'reverted' || !file.revertible || file.diff_truncated;
+          return `<div class="cw-review-file">
+            <div class="cw-review-file-main">
+              <div class="cw-review-file-path" title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</div>
+              <div class="cw-review-file-meta">
+                <span>${escapeHtml(gitStatusLabel(file.status))}</span>
+                <span class="cw-code-diff-add">+${file.additions || 0}</span>
+                <span class="cw-code-diff-del">-${file.deletions || 0}</span>
+                <span class="cw-review-state ${escapeHtml(state)}">${stateLabel}</span>
+                ${file.diff_truncated ? '<span>Diff 已截断</span>' : ''}
+              </div>
+            </div>
+            <div class="cw-review-file-actions">
+              <button type="button" class="cw-review-btn" data-review-view="${keyId}" data-review-path="${keyPath}">查看 Diff</button>
+              <button type="button" class="cw-review-btn primary" data-review-keep="${keyId}" data-review-path="${keyPath}" ${state !== 'pending' || !persistedChangeSet ? 'disabled' : ''} title="${!persistedChangeSet ? '旧会话没有持久化变更集标识，仅支持查看' : '确认保留此文件'}">保留</button>
+              <button type="button" class="cw-review-btn danger" data-review-revert="${keyId}" data-review-path="${keyPath}" ${cannotRevert ? 'disabled' : ''} title="${cannotRevert && state === 'pending' ? '没有完整可逆补丁，请使用整轮回退' : '撤销这个文件的本轮 AI 修改'}">撤销</button>
+            </div>
+          </div>`;
+        }).join('')}</div>
+      </section>`;
+    }).join('');
+  }
+  const latestValidation = codeReviewState.validations[codeReviewState.validations.length - 1];
+  if (codeValidationResult) codeValidationResult.innerHTML = latestValidation ? renderCodeValidationCard(latestValidation) : '';
+}
+
+function findCodeReviewFile(changeSetId, path) {
+  const set = codeReviewState.changeSets.find(item => item.id === changeSetId);
+  const file = set?.files.find(item => item.path === path);
+  return set && file ? { set, file } : null;
+}
+
+async function reviewCodeChange(changeSetId, path, action, button) {
+  if (!sessionId || !codeMode) return false;
+  if (currentCodeRuntime !== 'claude_agent_sdk') {
+    toast('这个历史会话不归 Claude Agent SDK 管理');
+    return false;
+  }
+  const priorText = button?.textContent || '';
+  if (button) { button.disabled = true; button.textContent = action === 'revert' ? '撤销中…' : '保存中…'; }
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/changes/review`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ change_set_id: changeSetId, path, action }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    const found = findCodeReviewFile(changeSetId, path);
+    if (found && data.item) Object.assign(found.file, data.item);
+    recomputeCodeReviewStats();
+    renderCodeReviewPanel();
+    refreshGitStatus();
+    toast(action === 'revert' ? '已安全撤销该文件的本轮 AI 修改' : '已标记为保留');
+    return true;
+  } catch (error) {
+    toast(`操作失败：${error.message || error}`, { timeout: 5000 });
+    if (button) { button.disabled = false; button.textContent = priorText; }
+    return false;
+  }
+}
+
+codeReviewList?.addEventListener('click', (event) => {
+  const rewind = event.target.closest('[data-review-rewind]');
+  if (rewind) { previewNativeRewind(Number(rewind.dataset.reviewRewind)); return; }
+  const actionButton = event.target.closest('[data-review-view],[data-review-keep],[data-review-revert]');
+  if (!actionButton) return;
+  const changeSetId = decodeURIComponent(actionButton.dataset.reviewView || actionButton.dataset.reviewKeep || actionButton.dataset.reviewRevert || '');
+  const path = decodeURIComponent(actionButton.dataset.reviewPath || '');
+  const found = findCodeReviewFile(changeSetId, path);
+  if (!found) return;
+  if (actionButton.hasAttribute('data-review-view')) {
+    openGitFileDiff(path, found.file.diff, { truncated: !!found.file.diff_truncated, turnLabel: codeReviewTurnLabel(found.set.userIndex) });
+  } else {
+    reviewCodeChange(changeSetId, path, actionButton.hasAttribute('data-review-revert') ? 'revert' : 'keep', actionButton);
+  }
+});
+
+async function runCodeValidation() {
+  if (!sessionId || !codeMode) { toast('请先打开 Code 会话'); return; }
+  if (currentCodeRuntime !== 'claude_agent_sdk') {
+    toast('这个历史会话不归 Claude Agent SDK 管理，不能启动原生验证回路');
+    return;
+  }
+  if (currentController) { toast('Claude 正在运行，请完成或停止后再验证'); return; }
+  const command = (codeValidationCommand?.value || '').trim();
+  codeValidationRun.disabled = true;
+  codeValidationRun.textContent = '验证中…';
+  if (codeValidationResult) codeValidationResult.innerHTML = '<div class="cw-code-diff-empty">正在运行测试或构建命令…</div>';
+  try {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/validate`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ command, timeout: 120 }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    registerCodeValidation(data.event);
+    addCodeValidationBlock(null, data.event);
+    renderCodeReviewPanel();
+  } catch (error) {
+    if (codeValidationResult) codeValidationResult.innerHTML = `<div class="cw-code-diff-empty" style="color:#b53d38;">${escapeHtml(error.message || error)}</div>`;
+  } finally {
+    codeValidationRun.disabled = false;
+    codeValidationRun.textContent = '运行验证';
+  }
+}
+
+codeValidationRun?.addEventListener('click', runCodeValidation);
+codeValidationCommand?.addEventListener('keydown', event => {
+  if (event.key === 'Enter') { event.preventDefault(); runCodeValidation(); }
+});
+
+document.addEventListener('click', event => {
+  const expand = event.target.closest('[data-expand-code-diff]');
+  if (expand) {
+    const lines = expand.nextElementSibling;
+    lines?.classList.remove('hidden');
+    expand.setAttribute('aria-expanded', 'true');
+    expand.remove();
+    return;
+  }
+  const fix = event.target.closest('[data-fix-validation]');
+  if (!fix || !codeMode) return;
+  const validation = codeReviewState.validations.find(item => item.validation_id === fix.dataset.fixValidation);
+  if (!validation) return;
+  const prompt = [
+    '刚才的代码验证失败了，请分析失败原因、修复代码并重新运行同一验证。',
+    `命令：${validation.command || ''}`,
+    `退出码：${validation.returncode}`,
+    `是否超时：${validation.timed_out ? '是' : '否'}`,
+    validation.stdout ? `stdout：\n${String(validation.stdout).slice(0, 6000)}` : '',
+    validation.stderr ? `stderr：\n${String(validation.stderr).slice(0, 4000)}` : '',
+  ].filter(Boolean).join('\n\n');
+  closeModal(codeReviewModal);
+  if (currentController) { toast('Claude 正在运行，请稍后再让它修复'); return; }
+  sendRaw(prompt, '修复刚才未通过的代码验证，并重新运行验证。', []);
+});
+
+async function renderChangedFilesSummary(container, changedFiles = [], meta = {}) {
   if (!codeMode || !container) return;
   container.querySelector(':scope > .cw-changed-files')?.remove();
-  const files = Array.isArray(changedFiles)
-    ? changedFiles
-        .map(file => ({
-          path: String(file?.path || '').trim(),
-          status: String(file?.status || 'M').trim() || 'M',
-        }))
-        .filter(file => file.path)
-    : [];
-  updateSessionStatsFiles(files);
-  // Extract diff stats from server response
-  if (files.length && changedFiles[0]) {
-    const totalAdd = changedFiles[0]._total_additions || 0;
-    const totalDel = changedFiles[0]._total_deletions || 0;
-    setSessionStatsDiff(totalAdd, totalDel);
-  }
+  const set = registerCodeChangeSet(changedFiles, meta);
+  const files = set?.files || [];
   if (!files.length) return;
   try {
     const card = document.createElement('section');
@@ -13302,18 +14412,62 @@ async function renderChangedFilesSummary(container, changedFiles = []) {
     card.innerHTML = `
       <div class="cw-changed-files-head">
         <span class="cw-changed-files-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7Z"/><path d="M14 2v5h5"/></svg></span>
-        <strong>修改的文件</strong>
+        <strong>本轮修改</strong>
         <span>${files.length}</span>
       </div>
       <div class="cw-changed-files-list">
-        ${files.map(file => `<button type="button" class="cw-changed-file" data-git-diff-path="${escapeHtml(file.path)}">
-          <span class="cw-changed-file-status status-${escapeHtml(file.status || 'M')}">${gitStatusLabel(file.status || 'M')}</span>
-          <code title="${escapeHtml(file.path)}">${escapeHtml(file.path)}</code>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg>
-        </button>`).join('')}
+        ${files.map((file, index) => {
+          const persisted = /^[0-9a-f]{32}$/.test(set.id);
+          const state = file.review_state || 'pending';
+          const stateLabel = state === 'kept' ? '已保留' : state === 'reverted' ? '已撤销' : '待审查';
+          const cannotRevert = !persisted || !file.revertible || file.diff_truncated || state !== 'pending';
+          return `<details class="cw-changed-file-review" data-inline-review-index="${index}" ${index === 0 ? 'open' : ''}>
+            <summary class="cw-changed-file">
+              <span class="cw-changed-file-status status-${escapeHtml(file.status || 'M')}">${gitStatusLabel(file.status || 'M')}</span>
+              <code title="${escapeHtml(file.path)}">${escapeHtml(file.path)} · +${file.additions || 0} / -${file.deletions || 0}</code>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m9 18 6-6-6-6"/></svg>
+            </summary>
+            <div class="cw-inline-git-diff">
+              <pre class="git-diff-content">${renderGitDiffHtml(file.diff || '', file.path)}</pre>
+              <div class="cw-inline-review-actions">
+                <span class="cw-inline-review-state ${escapeHtml(state)}">${stateLabel}${file.diff_truncated ? ' · Diff 已截断' : ''}</span>
+                <button type="button" class="cw-review-btn" data-inline-open-validation>运行验证</button>
+                <button type="button" class="cw-review-btn" data-inline-view-diff="${index}">全屏查看</button>
+                <button type="button" class="cw-review-btn primary" data-inline-review-action="keep" data-inline-review-file="${index}" ${!persisted || state !== 'pending' ? 'disabled' : ''}>保留</button>
+                <button type="button" class="cw-review-btn danger" data-inline-review-action="revert" data-inline-review-file="${index}" ${cannotRevert ? 'disabled' : ''} title="${cannotRevert && state === 'pending' ? '没有完整可逆补丁，请使用整轮回退' : '撤销这个文件的本轮 AI 修改'}">撤销</button>
+              </div>
+            </div>
+          </details>`;
+        }).join('')}
       </div>`;
-    card.querySelectorAll('[data-git-diff-path]').forEach(btn => {
-      btn.addEventListener('click', () => openGitFileDiff(btn.dataset.gitDiffPath || ''));
+    card.querySelectorAll('[data-inline-view-diff]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const file = files[Number(btn.dataset.inlineViewDiff)];
+        if (file) openGitFileDiff(file.path, file.diff, { truncated: !!file.diff_truncated, turnLabel: codeReviewTurnLabel(set.userIndex) });
+      });
+    });
+    card.querySelectorAll('[data-inline-open-validation]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        renderCodeReviewPanel();
+        openModal(codeReviewModal);
+        codeValidationCommand?.focus();
+      });
+    });
+    card.querySelectorAll('[data-inline-review-action]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const file = files[Number(btn.dataset.inlineReviewFile)];
+        const action = btn.dataset.inlineReviewAction;
+        if (!file || !['keep', 'revert'].includes(action)) return;
+        const applied = await reviewCodeChange(set.id, file.path, action, btn);
+        if (!applied) return;
+        const row = btn.closest('.cw-changed-file-review');
+        const state = row?.querySelector('.cw-inline-review-state');
+        if (state) {
+          state.className = `cw-inline-review-state ${action === 'revert' ? 'reverted' : 'kept'}`;
+          state.textContent = action === 'revert' ? '已撤销' : '已保留';
+        }
+        row?.querySelectorAll('[data-inline-review-action]').forEach(actionButton => { actionButton.disabled = true; });
+      });
     });
     container.appendChild(card);
     scrollBottom();
@@ -13564,10 +14718,17 @@ function agentSdkSourceLabel(source) {
   return ({
     managed: 'claude-web 自有安装',
     bundled: '开发目录安装',
-    ccgui_migration: 'ccgui 迁移兼容路径',
+    ccgui_migration: '旧版安装兼容路径',
     environment_override: '环境变量覆盖',
     external: '外部安装',
   })[source] || '未加载';
+}
+
+function setAgentSdkInstallButton(label, loading = false) {
+  if (!agentSdkInstallBtn) return;
+  if (agentSdkInstallLabel) agentSdkInstallLabel.textContent = label;
+  agentSdkInstallBtn.classList.toggle('is-loading', loading);
+  agentSdkInstallBtn.setAttribute('aria-busy', loading ? 'true' : 'false');
 }
 
 async function refreshAgentSdkStatus() {
@@ -13582,7 +14743,11 @@ async function refreshAgentSdkStatus() {
     agentSdkStatusText.textContent = data.running
       ? `运行中 ${active} · ${source} · 锁定 ${required}`
       : `未运行 · 锁定 ${required}${data.error ? ` · ${data.error}` : ''}`;
-    agentSdkStatusText.style.color = data.active_compatible ? 'var(--text-muted)' : 'var(--danger, #dc2626)';
+    if (agentSdkCard) {
+      agentSdkCard.dataset.status = data.running && data.active_compatible
+        ? 'ready'
+        : (data.error ? 'error' : 'attention');
+    }
     if (agentSdkPathText) {
       agentSdkPathText.textContent = data.active_path
         ? `当前：${data.active_path}`
@@ -13595,21 +14760,27 @@ async function refreshAgentSdkStatus() {
         : (!data.node_compatible
           ? `需要 Node.js 18+（当前 ${data.node_version || '未检测到'}）`
           : (!data.npm_available ? '未找到 npm' : '安装并激活 claude-web 锁定的精确版本'));
-      agentSdkInstallBtn.textContent = data.installed_compatible ? '重新安装锁定版' : '安装 / 修复锁定版';
+      const actionLabel = data.installed_compatible
+        ? '重新安装'
+        : (data.installed_version && required !== '未知' ? `升级到 ${required}` : '安装锁定版');
+      setAgentSdkInstallButton(actionLabel);
     }
     return data;
   } catch (error) {
     agentSdkStatusText.textContent = `检测失败：${error.message || error}`;
-    if (agentSdkInstallBtn) agentSdkInstallBtn.disabled = true;
+    if (agentSdkCard) agentSdkCard.dataset.status = 'error';
+    if (agentSdkInstallBtn) {
+      agentSdkInstallBtn.disabled = true;
+      setAgentSdkInstallButton('暂不可用');
+    }
     return null;
   }
 }
 
 if (agentSdkInstallBtn) agentSdkInstallBtn.addEventListener('click', async () => {
   if (!confirm('将下载并安装 claude-web 锁定的 Claude Agent SDK 版本。安装期间不能有正在运行的 Code 任务。继续吗？')) return;
-  const previous = agentSdkInstallBtn.textContent;
   agentSdkInstallBtn.disabled = true;
-  agentSdkInstallBtn.textContent = '安装中…';
+  setAgentSdkInstallButton('正在安装…', true);
   if (agentSdkStatusText) agentSdkStatusText.textContent = '正在通过 npm 安装并校验锁定版本…';
   try {
     const response = await fetch('/api/agent-sdk/install', { method: 'POST' });
@@ -13619,7 +14790,6 @@ if (agentSdkInstallBtn) agentSdkInstallBtn.addEventListener('click', async () =>
   } catch (error) {
     toast(`Agent SDK 安装失败：${error.message || error}`, { timeout: 7000 });
   } finally {
-    agentSdkInstallBtn.textContent = previous;
     await refreshAgentSdkStatus();
   }
 });
@@ -14511,8 +15681,9 @@ $('cwStatsAgents')?.addEventListener('click', () => {
   }
 });
 $('cwStatsEdits')?.addEventListener('click', () => {
-  const filesEl = document.querySelector('.cw-changed-files');
-  if (filesEl) filesEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (!codeMode) return;
+  renderCodeReviewPanel();
+  openModal(codeReviewModal);
 });
 urlAutoFetchEl.addEventListener('change', () => {
   settings.urlAutoFetch = urlAutoFetchEl.checked;
@@ -16457,12 +17628,18 @@ function updateWelcomeCopy() {
 
 function setCodeMode(enabled, options = {}) {
   codeMode = !!enabled;
-  if (!codeMode) setPermissionModeMenuOpen(false);
+  if (!codeMode) {
+    setPermissionModeMenuOpen(false);
+    codeReviewModal?.classList.add('hidden');
+    rewindPreviewModal?.classList.add('hidden');
+  }
   if (codeMode) {
     setMoreToolsOpen(false);
     closeFeedbackPopover();
   }
   document.body.classList.toggle('code-mode', codeMode);
+  syncNativeCodeControls();
+  renderCodeFileReferences();
   renderSessionStatsBar();
   applyWebSearchBtnState();
   if (!sessionId) {

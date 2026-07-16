@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import difflib
 import hashlib
 import hmac
 import io
@@ -9,10 +10,12 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import sqlite3
 import struct
+import sys
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -108,6 +111,8 @@ CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_UPLOAD_MB = 20
 IGNORED_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".next", "dist", "build", ".cache", ".idea", ".vscode"}
+_CODE_DIFF_FILE_LIMIT = 80_000
+_CODE_DIFF_TURN_LIMIT = 240_000
 KNOWN_TOOL_NAMES = {
     "Bash", "Read", "Write", "Edit", "MultiEdit", "Grep", "Glob",
     "LS", "WebFetch", "WebSearch", "TodoWrite", "Task", "NotebookEdit",
@@ -115,6 +120,8 @@ KNOWN_TOOL_NAMES = {
 _CODE_WORKSPACE_ALLOWED_TOOLS = sorted(KNOWN_TOOL_NAMES)
 
 _running_processes: Dict[str, asyncio.subprocess.Process] = {}
+_code_validation_processes: Dict[str, Optional[asyncio.subprocess.Process]] = {}
+_code_validation_stop_requests: Set[str] = set()
 _claude_agent_bridge = AgentSdkBridge()
 _agent_sdk_running_sessions: Set[str] = set()
 _agent_sdk_detached_turn_tasks: Dict[str, asyncio.Task] = {}
@@ -351,6 +358,7 @@ def _session_control_busy(session_id: str) -> bool:
         _session_runtime_busy(session_id)
         or _session_agent_loop_busy(session_id)
         or session_id in _compacting_sessions
+        or session_id in _code_validation_processes
     )
 
 
@@ -1205,6 +1213,17 @@ class NativeRewindRequest(NativeCompactRequest):
     dry_run: Optional[bool] = False
 
 
+class CodeChangeReviewRequest(BaseModel):
+    change_set_id: str
+    path: str
+    action: str
+
+
+class CodeValidationRequest(BaseModel):
+    command: Optional[str] = ""
+    timeout: Optional[int] = 120
+
+
 class GitCheckoutRequest(BaseModel):
     cwd: str
     branch: str
@@ -1856,41 +1875,234 @@ async def git_dirty_signatures(cwd: str) -> Dict[str, dict]:
     return out
 
 
-async def git_changed_files_since(cwd: str, before: Optional[Dict[str, dict]]) -> List[dict]:
+def _code_diff_stats(diff_text: str) -> Tuple[int, int]:
+    additions = 0
+    deletions = 0
+    for line in (diff_text or "").splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return additions, deletions
+
+
+def _read_diff_bytes(path: Path, max_bytes: int = 5 * 1024 * 1024) -> Tuple[bool, bytes, bool, int]:
+    # Never follow an untracked symlink while building a browser-visible diff.
+    # A link may point outside the project and its target bytes cannot be
+    # restored faithfully by a regular text patch anyway.
+    if path.is_symlink():
+        return True, b"", True, 0
+    if not path.exists():
+        return False, b"", False, 0
+    if not path.is_file():
+        return True, b"", True, 0
+    try:
+        info = path.stat()
+        git_mode = 0o100755 if info.st_mode & 0o111 else 0o100644
+        if info.st_size > max_bytes:
+            return True, b"", True, git_mode
+        payload = path.read_bytes()
+    except OSError:
+        return True, b"", True, 0
+    return True, payload, b"\0" in payload, git_mode
+
+
+def _text_checkpoint_diff(
+    rel_path: str,
+    before_exists: bool,
+    before: bytes,
+    after_exists: bool,
+    after: bytes,
+    before_mode: int = 0o100644,
+    after_mode: int = 0o100644,
+) -> Tuple[str, bool]:
+    if (before_exists and b"\0" in before) or (after_exists and b"\0" in after):
+        return f"Binary files a/{rel_path} and b/{rel_path} differ\n", False
+    try:
+        old_text = before.decode("utf-8") if before_exists else ""
+        new_text = after.decode("utf-8") if after_exists else ""
+    except UnicodeDecodeError:
+        return f"Binary or non-UTF-8 file changed: {rel_path}\n", False
+    old_lines = old_text.splitlines(keepends=True)
+    new_lines = new_text.splitlines(keepends=True)
+    from_file = f"a/{rel_path}" if before_exists else "/dev/null"
+    to_file = f"b/{rel_path}" if after_exists else "/dev/null"
+    lines = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=from_file,
+        tofile=to_file,
+        lineterm="\n",
+    )
+    chunks: List[str] = [f"diff --git a/{rel_path} b/{rel_path}\n"]
+    if not before_exists and after_exists:
+        chunks.append(f"new file mode {after_mode or 0o100644:06o}\n")
+    elif before_exists and not after_exists:
+        chunks.append(f"deleted file mode {before_mode or 0o100644:06o}\n")
+    elif before_exists and after_exists and before_mode and after_mode and before_mode != after_mode:
+        chunks.extend([f"old mode {before_mode:06o}\n", f"new mode {after_mode:06o}\n"])
+    for line in lines:
+        if line.endswith(("\n", "\r")):
+            chunks.append(line)
+            continue
+        # Git patches must explicitly describe a missing final newline. Without
+        # this marker ``git apply --reverse`` either rejects the patch or can
+        # restore subtly different bytes.
+        chunks.append(line + "\n")
+        if line[:1] in {" ", "+", "-"}:
+            chunks.append("\\ No newline at end of file\n")
+    diff_text = "".join(chunks)
+    if len(chunks) == 1:
+        return "", True
+    return diff_text, True
+
+
+async def _code_diff_from_checkpoint(cwd: str, checkpoint: Optional[dict], rel_path: str) -> Tuple[str, bool]:
+    """Return the exact turn diff against the checkpoint created before the turn.
+
+    This avoids mixing pre-existing dirty worktree changes into the AI review.
+    The returned boolean indicates whether the complete patch can be safely fed
+    to ``git apply --reverse`` for a guarded per-file rollback.
+    """
+    relative = _safe_checkpoint_relative_path(rel_path)
+    if relative is None:
+        return "", False
+    root = Path(cwd).resolve()
+    current_path = (root / relative).resolve()
+    if root != current_path and root not in current_path.parents:
+        return "", False
+    after_exists, after_bytes, after_binary_or_large, after_mode = await asyncio.to_thread(_read_diff_bytes, current_path)
+
+    if not checkpoint or checkpoint.get("type") not in {"git", "git-v2"}:
+        diff_text = await _git_run_raw(cwd, "diff", "--binary", "--no-ext-diff", "--unified=3", "--", rel_path) or ""
+        return diff_text, bool(diff_text) and "Binary files" not in diff_text
+
+    before_untracked = set(str(item) for item in (checkpoint.get("untracked") or []))
+    if rel_path in before_untracked and checkpoint.get("type") == "git-v2":
+        checkpoint_id = str(checkpoint.get("id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", checkpoint_id):
+            return "", False
+        backup_path = CHECKPOINT_DIR / checkpoint_id / "untracked" / relative
+        before_exists, before_bytes, before_binary_or_large, before_mode = await asyncio.to_thread(_read_diff_bytes, backup_path)
+        if before_binary_or_large or after_binary_or_large:
+            return f"Binary or oversized file changed: {rel_path}\n", False
+        return _text_checkpoint_diff(
+            rel_path,
+            before_exists,
+            before_bytes,
+            after_exists,
+            after_bytes,
+            before_mode,
+            after_mode,
+        )
+
+    base_ref = str(checkpoint.get("stash") or checkpoint.get("head") or "").strip()
+    if base_ref:
+        existed_in_base = await _git_run(cwd, "cat-file", "-e", f"{base_ref}:{rel_path}") is not None
+        if existed_in_base:
+            diff_text = await _git_run_raw(
+                cwd,
+                "diff",
+                "--binary",
+                "--no-ext-diff",
+                "--unified=3",
+                base_ref,
+                "--",
+                rel_path,
+            ) or ""
+            return diff_text, bool(diff_text)
+
+    if after_binary_or_large:
+        return f"Binary or oversized file changed: {rel_path}\n", False
+    return _text_checkpoint_diff(
+        rel_path,
+        False,
+        b"",
+        after_exists,
+        after_bytes,
+        0,
+        after_mode,
+    )
+
+
+async def git_changed_files_since(
+    cwd: str,
+    before: Optional[Dict[str, dict]],
+    checkpoint: Optional[dict] = None,
+) -> List[dict]:
     before = before or {}
     after = await git_dirty_signatures(cwd)
+    checkpoint_paths: Set[str] = set()
+    checkpoint_base_ref = ""
+    if checkpoint and checkpoint.get("type") in {"git", "git-v2"}:
+        checkpoint_base_ref = str(checkpoint.get("stash") or checkpoint.get("head") or "").strip()
+        if checkpoint_base_ref:
+            raw_checkpoint_paths = await _git_run_raw(
+                cwd,
+                "diff",
+                "--name-only",
+                "-z",
+                checkpoint_base_ref,
+                "--",
+            )
+            if raw_checkpoint_paths is not None:
+                checkpoint_paths = {
+                    path
+                    for path in raw_checkpoint_paths.split("\0")
+                    if path and _safe_checkpoint_relative_path(path) is not None
+                }
     changed: List[dict] = []
-    for path, item in after.items():
+    # Include files that became clean during the turn. They are absent from the
+    # post-turn porcelain output but still represent an AI-authored change.
+    for path in sorted(set(before) | set(after) | checkpoint_paths):
+        item = after.get(path)
         prev = before.get(path)
-        if prev and prev.get("signature") == item.get("signature") and prev.get("status") == item.get("status"):
+        checkpoint_changed = path in checkpoint_paths
+        if (
+            not checkpoint_changed
+            and item
+            and prev
+            and prev.get("signature") == item.get("signature")
+            and prev.get("status") == item.get("status")
+        ):
             continue
-        changed.append({"path": path, "status": item.get("status") or "M"})
+        if item is None and prev is None and not checkpoint_changed:
+            continue
+        status = (item or prev or {}).get("status") or "M"
+        if checkpoint_changed and item is None and prev is None and checkpoint_base_ref:
+            existed_before = await _git_run(cwd, "cat-file", "-e", f"{checkpoint_base_ref}:{path}") is not None
+            exists_now = (Path(cwd) / path).exists()
+            status = "D" if existed_before and not exists_now else ("A" if not existed_before and exists_now else "M")
+        changed.append({"path": path, "status": status})
     changed.sort(key=lambda item: (0 if item.get("status") == "A" else 1, item.get("path") or ""))
-    # Attach diff stat (additions/deletions) for changed files
+
+    total_add = 0
+    total_del = 0
+    remaining = _CODE_DIFF_TURN_LIMIT
+    for item in changed:
+        diff_text, revertible = await _code_diff_from_checkpoint(cwd, checkpoint, str(item.get("path") or ""))
+        additions, deletions = _code_diff_stats(diff_text)
+        item["additions"] = additions
+        item["deletions"] = deletions
+        total_add += additions
+        total_del += deletions
+        if not diff_text:
+            item["diff"] = ""
+            item["revertible"] = False
+            continue
+        per_file_limit = min(_CODE_DIFF_FILE_LIMIT, max(0, remaining))
+        if len(diff_text) > per_file_limit:
+            item["diff"] = diff_text[:per_file_limit]
+            item["diff_truncated"] = True
+            item["revertible"] = False
+            remaining = 0
+        else:
+            item["diff"] = diff_text
+            item["revertible"] = bool(revertible)
+            remaining -= len(diff_text)
     if changed:
-        numstat = await _git_run(cwd, "diff", "--numstat")
-        numstat_cached = await _git_run(cwd, "diff", "--cached", "--numstat")
-        stat_map: Dict[str, Tuple[int, int]] = {}
-        for line in ((numstat or "") + "\n" + (numstat_cached or "")).splitlines():
-            parts = line.split("\t")
-            if len(parts) >= 3:
-                add_str, del_str, fpath = parts[0], parts[1], parts[2]
-                try:
-                    stat_map[fpath] = (int(add_str), int(del_str))
-                except ValueError:
-                    pass
-        total_add = 0
-        total_del = 0
-        for item in changed:
-            p = item.get("path", "")
-            if p in stat_map:
-                item["additions"] = stat_map[p][0]
-                item["deletions"] = stat_map[p][1]
-                total_add += stat_map[p][0]
-                total_del += stat_map[p][1]
-        if changed:
-            changed[0]["_total_additions"] = total_add
-            changed[0]["_total_deletions"] = total_del
+        changed[0]["_total_additions"] = total_add
+        changed[0]["_total_deletions"] = total_del
     return changed
 
 
@@ -4907,6 +5119,7 @@ async def _drain_detached_agent_sdk_turn(
     remote_became_ready: bool,
     work_dir: str,
     display_text: str,
+    checkpoint: Optional[dict],
     git_dirty_before: Dict[str, str],
     workspace_mode: Optional[str],
     code_write_intent_seen: bool,
@@ -4960,12 +5173,13 @@ async def _drain_detached_agent_sdk_turn(
             if targets:
                 code_write_targets.update(targets)
             if event_type == "result" and not obj.get("parent_tool_use_id"):
-                changed_files = await git_changed_files_since(work_dir, git_dirty_before)
+                changed_files = await git_changed_files_since(work_dir, git_dirty_before, checkpoint)
                 obj["changed_files"] = filter_code_changed_files(
                     changed_files,
                     code_write_targets,
                     code_write_intent_seen,
                 )
+                obj["change_set_id"] = str(obj.get("change_set_id") or uuid.uuid4().hex)
             if event_type != "stream_event" and not (
                 event_type == "system" and str(obj.get("subtype") or "").startswith("hook_")
             ):
@@ -5085,12 +5299,13 @@ def _agent_sdk_streaming_response(
                 if targets:
                     code_write_targets.update(targets)
                 if event_type == "result" and not obj.get("parent_tool_use_id"):
-                    changed_files = await git_changed_files_since(work_dir, git_dirty_before)
+                    changed_files = await git_changed_files_since(work_dir, git_dirty_before, checkpoint)
                     obj["changed_files"] = filter_code_changed_files(
                         changed_files,
                         code_write_targets,
                         code_write_intent_seen,
                     )
+                    obj["change_set_id"] = str(obj.get("change_set_id") or uuid.uuid4().hex)
 
                 if event_type != "stream_event" and not (
                     event_type == "system" and str(obj.get("subtype") or "").startswith("hook_")
@@ -5109,6 +5324,7 @@ def _agent_sdk_streaming_response(
                     remote_became_ready=remote_became_ready,
                     work_dir=work_dir,
                     display_text=display_text,
+                    checkpoint=checkpoint,
                     git_dirty_before=git_dirty_before,
                     workspace_mode=workspace_mode,
                     code_write_intent_seen=code_write_intent_seen,
@@ -5467,12 +5683,13 @@ async def _chat_response(req: ChatRequest, *, agent_loop_owner: bool = False):
                     if targets:
                         code_write_targets.update(targets)
                 if t == "result" and not obj.get("parent_tool_use_id") and code_workspace:
-                    changed_files = await git_changed_files_since(work_dir, git_dirty_before)
+                    changed_files = await git_changed_files_since(work_dir, git_dirty_before, checkpoint)
                     obj["changed_files"] = filter_code_changed_files(
                         changed_files,
                         code_write_targets,
                         code_write_intent_seen,
                     )
+                    obj["change_set_id"] = str(obj.get("change_set_id") or uuid.uuid4().hex)
 
                 if t != "stream_event" and not (t == "system" and obj.get("subtype", "").startswith("hook_")):
                     append_event(session_id, obj)
@@ -5621,9 +5838,15 @@ def _agent_loop_detect_test_command(cwd: str) -> Tuple[str, str]:
             pass
     if (root / "Makefile").is_file() or (root / "makefile").is_file():
         return "make test", "Makefile"
-    python_markers = ("pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg")
-    if any((root / name).is_file() for name in python_markers):
+    pytest_markers = ("pytest.ini", "tox.ini")
+    if any((root / name).is_file() for name in pytest_markers) or shutil.which("pytest"):
         return "pytest", "python project"
+    python_markers = ("pyproject.toml", "setup.cfg", "setup.py")
+    if any((root / name).is_file() for name in python_markers):
+        tests_dir = root / "tests"
+        if tests_dir.is_dir() and any(tests_dir.glob("test*.py")):
+            command = f"{shlex.quote(sys.executable)} -m unittest discover -s tests"
+            return command, "unittest project"
     return "", ""
 
 
@@ -5748,7 +5971,7 @@ def _normalize_agent_loop_test_command(command: str) -> str:
         return ""
     if len(value) > 500:
         raise HTTPException(status_code=400, detail="test_command too long")
-    if "\n" in value or "\r" in value:
+    if "\n" in value or "\r" in value or "\0" in value:
         raise HTTPException(status_code=400, detail="test_command must be a single line")
     return value
 
@@ -5811,7 +6034,12 @@ def _agent_loop_done_test_retry_prompt(goal: str, turn: int, max_turns: int, use
     return "\n".join(lines)
 
 
-async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeout: int = 120) -> dict:
+async def _run_validation_command(
+    command: str,
+    cwd: str,
+    timeout: int = 120,
+    on_process=None,
+) -> dict:
     started = time.time()
     result = {
         "command": command,
@@ -5821,7 +6049,6 @@ async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeou
         "timed_out": False,
         "duration_ms": 0,
     }
-    await _agent_loop_emit(job, {"type": "agent_loop_test_start", "command": command})
     try:
         proc = await asyncio.create_subprocess_exec(
             "bash", "-lc", command,
@@ -5830,7 +6057,8 @@ async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeou
             cwd=cwd,
             limit=4 * 1024 * 1024,
         )
-        job.test_process = proc
+        if on_process is not None:
+            on_process(proc)
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -5847,8 +6075,20 @@ async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeou
         result["returncode"] = -1
         result["stderr"] = str(e)
     finally:
-        job.test_process = None
+        if on_process is not None:
+            on_process(None)
         result["duration_ms"] = int((time.time() - started) * 1000)
+    return result
+
+
+async def _agent_loop_run_test(job: AgentLoopJob, command: str, cwd: str, timeout: int = 120) -> dict:
+    await _agent_loop_emit(job, {"type": "agent_loop_test_start", "command": command})
+    result = await _run_validation_command(
+        command,
+        cwd,
+        timeout,
+        on_process=lambda process: setattr(job, "test_process", process),
+    )
     await _agent_loop_emit(job, {"type": "agent_loop_test_result", "result": result})
     return result
 
@@ -6151,6 +6391,15 @@ async def stop_agent_loop(job_id: str):
 
 @app.post("/api/chat/stop/{session_id}")
 async def stop_chat(session_id: str):
+    if session_id in _code_validation_processes:
+        _code_validation_stop_requests.add(session_id)
+        process = _code_validation_processes.get(session_id)
+        if process is not None and process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+        return {"ok": True, "runtime": "code_validation"}
     if session_id in _agent_sdk_running_sessions:
         _stopped_sessions.add(session_id)
         try:
@@ -6385,7 +6634,149 @@ async def rewind_agent_sdk_files(session_id: str, req: NativeRewindRequest):
         raise HTTPException(status_code=504, detail="Claude Agent SDK rewind timed out") from exc
     except AgentSdkBridgeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return {"ok": True, "runtime": _RUNTIME_ORIGIN_AGENT_SDK, **response}
+    rewind_event = None
+    if not bool(req.dry_run):
+        result = response.get("result") if isinstance(response, dict) else None
+        files_changed = result.get("filesChanged") if isinstance(result, dict) else []
+        rewind_event = {
+            "type": "code_rewind",
+            "user_message_id": user_message_id,
+            "event_index": req.event_index,
+            "files_changed": files_changed if isinstance(files_changed, list) else [],
+            "ts": time.time(),
+        }
+        append_event(session_id, rewind_event)
+    return {
+        "ok": True,
+        "runtime": _RUNTIME_ORIGIN_AGENT_SDK,
+        **response,
+        **({"rewind_event": rewind_event} if rewind_event else {}),
+    }
+
+
+def _find_code_change(events: List[dict], change_set_id: str, rel_path: str) -> Tuple[dict, dict]:
+    for event in events:
+        if event.get("type") != "result" or str(event.get("change_set_id") or "") != change_set_id:
+            continue
+        for item in event.get("changed_files") or []:
+            if isinstance(item, dict) and str(item.get("path") or "") == rel_path:
+                return event, item
+    raise HTTPException(status_code=404, detail="change set file not found")
+
+
+async def _git_reverse_patch(cwd: str, diff_text: str, *, check_only: bool) -> Tuple[bool, str]:
+    args = ["git", "-C", cwd, "apply", "--reverse", "--recount", "--whitespace=nowarn"]
+    if check_only:
+        args.append("--check")
+    args.append("-")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(diff_text.encode("utf-8")),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return False, "reverse patch timed out"
+    except FileNotFoundError:
+        return False, "git is not available"
+    detail = stderr.decode("utf-8", errors="replace").strip()[:2000]
+    return proc.returncode == 0, detail
+
+
+@app.post("/api/sessions/{session_id}/changes/review")
+async def review_code_change(session_id: str, req: CodeChangeReviewRequest):
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
+    row = _agent_sdk_session_row(session_id)
+    action = (req.action or "").strip().lower()
+    if action not in {"keep", "revert"}:
+        raise HTTPException(status_code=400, detail="action must be keep or revert")
+    change_set_id = (req.change_set_id or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{32}", change_set_id):
+        raise HTTPException(status_code=400, detail="invalid change_set_id")
+    relative = _safe_checkpoint_relative_path((req.path or "").strip())
+    if relative is None:
+        raise HTTPException(status_code=400, detail="invalid file path")
+    rel_path = relative.as_posix()
+    events = load_events(session_id)
+    _, item = _find_code_change(events, change_set_id, rel_path)
+    if item.get("review_state") == "reverted" and action == "revert":
+        return {"ok": True, "item": item, "already_applied": True}
+
+    if action == "revert":
+        diff_text = str(item.get("diff") or "")
+        if not diff_text or item.get("diff_truncated") or not item.get("revertible"):
+            raise HTTPException(status_code=409, detail="this file does not have a complete reversible patch")
+        cwd = row["cwd"] or os.path.expanduser("~")
+        checked, detail = await _git_reverse_patch(cwd, diff_text, check_only=True)
+        if not checked:
+            raise HTTPException(
+                status_code=409,
+                detail=(detail or "file changed after this AI edit; automatic revert was not applied"),
+            )
+        applied, detail = await _git_reverse_patch(cwd, diff_text, check_only=False)
+        if not applied:
+            raise HTTPException(status_code=409, detail=(detail or "unable to reverse the file patch"))
+        item["review_state"] = "reverted"
+    else:
+        item["review_state"] = "kept"
+    item["reviewed_at"] = time.time()
+    save_events(session_id, events)
+    return {"ok": True, "item": item}
+
+
+@app.post("/api/sessions/{session_id}/validate")
+async def validate_code_session(session_id: str, req: CodeValidationRequest):
+    if _session_control_busy(session_id):
+        raise HTTPException(status_code=409, detail="session is busy")
+    row = _agent_sdk_session_row(session_id)
+    cwd = row["cwd"] or os.path.expanduser("~")
+    command = _normalize_agent_loop_test_command(req.command or "")
+    source = "manual" if command else ""
+    if not command:
+        command, source = _agent_loop_detect_test_command(cwd)
+        command = _normalize_agent_loop_test_command(command)
+    if not command:
+        raise HTTPException(status_code=400, detail="unable to detect a validation command; enter one manually")
+    timeout = max(5, min(600, int(req.timeout or 120)))
+    _code_validation_processes[session_id] = None
+    _code_validation_stop_requests.discard(session_id)
+
+    def track_process(process):
+        if session_id in _code_validation_processes:
+            _code_validation_processes[session_id] = process
+        if (
+            process is not None
+            and session_id in _code_validation_stop_requests
+            and process.returncode is None
+        ):
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+
+    try:
+        result = await _run_validation_command(command, cwd, timeout, on_process=track_process)
+    finally:
+        _code_validation_processes.pop(session_id, None)
+        _code_validation_stop_requests.discard(session_id)
+    event = {
+        "type": "code_validation",
+        "validation_id": uuid.uuid4().hex,
+        "source": source,
+        **result,
+        "ts": time.time(),
+    }
+    append_event(session_id, event)
+    return {"ok": True, "event": event}
 
 
 @app.post("/api/sessions/{session_id}/compact/native")
